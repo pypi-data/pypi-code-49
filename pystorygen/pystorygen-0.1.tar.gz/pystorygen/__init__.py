@@ -1,0 +1,1 @@
+from pystorygen.storygen import Story 
