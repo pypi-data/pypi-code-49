@@ -1,0 +1,1 @@
+from zpcheckresource.checkresource import main
