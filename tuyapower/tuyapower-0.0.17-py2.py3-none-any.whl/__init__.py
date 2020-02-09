@@ -1,0 +1,377 @@
+# TuyaPower Module
+# -*- coding: utf-8 -*-
+"""
+ Python module to pull power and state data from Tuya WiFi smart devices
+
+ Author: Jason A. Cox
+ For more information see https://github.com/jasonacox/tuyapower
+
+ Functions and Usage
+   (on, w, mA, V, err) = tuyapower.deviceInfo(id, ip, key, vers)
+   tuyapower.devicePrint(id, ip, key, vers)
+   dataJSON = tuyapower.deviceJSON(id, ip, key, vers)
+   devices = deviceScan(verbose, port)
+   scan()
+
+ Parameters Sent:
+   id = Device ID e.g. 01234567891234567890
+   ip = Device IP Address e.g. 10.0.1.99
+   key = Device Key e.g. 0123456789abcdef
+   vers = Version of Protocol 3.1 or 3.3
+   verbose = True or False (print output)
+   port = UDP port to scan (default 6666)
+
+ Response Data:
+   on = Switch state - true or false
+   w = Wattage
+   mA = milliamps
+   V = Voltage (-99 if error or not supported)
+   err = Error message or OK
+   devices = Dictionary of all devices found with power data if available
+"""
+from __future__ import print_function   # python 2.7 support
+import datetime
+import logging
+import sys
+from time import sleep
+import socket
+import json
+from hashlib import md5
+from Crypto.Cipher import AES
+import pytuya
+
+if sys.version_info[0] < 3:
+    print("Warning: Python 3 Requred for full function")
+
+name = "tuyapower"
+version_tuple = (0, 0, 17)
+version = version_string = __version__ = "%d.%d.%d" % version_tuple
+__author__ = "jasonacox"
+
+log = logging.getLogger(__name__)
+
+log.info("%s version %s", __name__, version)
+log.info("Python %s on %s", sys.version, sys.platform)
+log.info("Using pytuya version %r", pytuya.version)
+
+# how my times to try to probe plug before giving up
+RETRY = 5
+
+# default polling response for error condition
+_DEFAULTS = (-99, -99, -99)  # w, mA, V
+
+# UDP packet payload decryption - credit to tuya-convert 
+pad = lambda s: s + (16 - len(s) % 16) * chr(16 - len(s) % 16)
+unpad = lambda s: s[:-ord(s[len(s) - 1:])]
+encrypt = lambda msg, key: AES.new(key, AES.MODE_ECB).encrypt(pad(msg).encode())
+decrypt = lambda msg, key: unpad(AES.new(key, AES.MODE_ECB).decrypt(msg)).decode()
+udpkey = md5(b"yGAdlopoPVldABfn").digest()
+decrypt_udp = lambda msg: decrypt(msg, udpkey)
+
+# (on, w, mA, V, err) = tuyapower.deviceInfo(id, ip, key, vers)
+def deviceInfo(deviceid, ip, key, vers):
+    """Poll Device for State
+       (on, w, mA, V, err) = tuyapower.deviceInfo(id, ip, key, vers)
+
+    Parameters :
+        id = Device ID e.g. 01234567891234567890
+        ip = Device IP Address e.g. 10.0.1.99
+        key = Device Key e.g. 0123456789abcdef
+        vers = Version of Protocol 3.1 or 3.3
+
+    Response :
+        on = Switch state - true or false
+        w = Wattage
+        mA = milliamps
+        V = Voltage (-99 if error or not supported)
+        err = Error message or OK
+    """
+    watchdog = 0
+    now = datetime.datetime.utcnow()
+    iso_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    while True:
+        w, mA, V = _DEFAULTS
+        try:
+            d = pytuya.OutletDevice(deviceid, ip, key)
+            if vers == "3.3":
+                d.set_version(3.3)
+
+            data = d.status()
+            if d:
+                dps = data["dps"]
+                sw = dps["1"]
+                if vers == "3.3" and ("19" in dps.keys()):
+                    w = float(dps["19"]) / 10.0
+                    mA = float(dps["18"])
+                    V = float(dps["20"]) / 10.0
+                    key = "OK"
+                elif "5" in dps.keys():
+                    w = float(dps["5"]) / 10.0
+                    mA = float(dps["4"])
+                    V = float(dps["6"]) / 10.0
+                    key = "OK"
+                else:
+                    key = "Power data unavailable"
+                info = dict(
+                    datetime=iso_time, switch=sw, power=w, current=mA, voltage=V
+                )
+                log.info(str(info))
+            else:
+                log.info("Incomplete response from plug %s [%s]." % (deviceid,ip))
+                sw = False
+                key = "Incomplete response"
+            return (sw, w, mA, V, key)
+        except KeyboardInterrupt:
+            log.info(
+                "CANCEL: Recived interrupt from user while polling plug %s [%s]."
+                % (deviceid, ip)
+            )
+            sw = False
+            return (sw, w, mA, V, "User Interrupt")
+        except:
+            watchdog += 1
+            if watchdog > RETRY:
+                log.info(
+                    "TIMEOUT: No response from plug %s [%s] after %s attempts."
+                    % (deviceid, ip, RETRY)
+                )
+                sw = False
+                return (sw, w, mA, V, "Timeout polling device")
+            try:
+                sleep(2)
+            except KeyboardInterrupt:
+                log.info(
+                    "CANCEL: Recived interrupt from user while polling plug %s [%s]."
+                    % (deviceid, ip)
+                )
+                sw = False
+                return (sw, w, mA, V, "User Interrupt")
+
+
+# Print output
+def devicePrint(deviceid, ip, key='0123456789abcdef', vers='3.1'):
+    """Poll device and print formatted output to stdout
+       tuyapower.devicePrint(id, ip, key, vers)
+
+    Parameters :
+        id = Device ID e.g. 01234567891234567890
+        ip = Device IP Address e.g. 10.0.1.99
+        key = Device Key e.g. 0123456789abcdef
+        vers = Version of Protocol 3.1 or 3.3
+
+    """
+    # Poll Smart Swich for Power Data
+    (on, w, mA, V, err) = deviceInfo(deviceid, ip, key, vers)
+
+    # Check for error
+    if err != "OK":
+        print(" ERROR: %s\n" % err)
+
+    # Compute projected kWh
+    day = (w / 1000.0) * 24
+    week = 7.0 * day
+    month = (week * 52.0) / 12.0
+
+    # Print Output
+    print("TuyaPower (Tuya Power Stats) [%s]"%version)
+    print("\nDevice %s at %s key %s protocol %s:" % (deviceid,ip,key,vers))
+    print("    Switch On: %r" % on)
+    print("    Power (W): %f" % w)
+    print("    Current (mA): %f" % mA)
+    print("    Voltage (V): %f" % V)
+    print(
+        "    Projected usage (kWh):  Day: %f  Week: %f  Month: %f\n"
+        % (day, week, month)
+    )
+
+# JSON response
+def deviceJSON(deviceid, ip, key='0123456789abcdef', vers='3.1'):
+    """Poll device on local network and return JSON formatted details
+       Response = tuyapower.devicePrint(id, ip, key, vers)
+
+    Parameters :
+        id = Device ID e.g. 01234567891234567890
+        ip = Device IP Address e.g. 10.0.1.99
+        key = Device Key e.g. 0123456789abcdef
+        vers = Version of Protocol 3.1 or 3.3
+
+    Response:
+        JSON String
+
+    Note: Devices are only seen if within the same broadcast network segment
+    """
+    # grab timestamp
+    now = datetime.datetime.utcnow()
+    iso_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Poll Smart Swich for Power Data
+    (on, w, mA, V, err) = deviceInfo(deviceid, ip, key, vers)
+
+    # Print JSON
+    return (
+        '{ "datetime": "%s", "switch": "%s", "power": "%s", "current": "%s", "voltage": "%s", "response": "%s" }'
+        % (iso_time, on, w, mA, V, err)
+    )
+
+# SCAN network for Tuya devices
+MAXCOUNT = 10       # How many tries before stopping
+DEBUG = False       # Additional details beyond verbose
+UDPPORT = 6666      # Tuya 3.1 UDP Port
+UDPPORTS = 6667     # Tuya 3.3 encrypted UDP Port
+TIMEOUT = 3.0       # Seconds to wait for a broadcast
+
+# Return positive number or zero
+def floor(x):
+    if x > 0:
+            return x
+    else:
+            return 0
+
+# Store found devices in memory
+def appenddevice(newdevice, devices):
+    if(newdevice['ip'] in devices):
+        return True
+    """
+    for i in devices:
+        if i['ip'] == newdevice['ip']:
+                return True
+    """
+    devices[newdevice['ip']] = newdevice
+    return False
+
+# Scan function shortcut
+def scan():
+    """Sans your network for smart plug devices with output to stdout
+    """
+    d = deviceScan(True)
+
+# Scan function
+def deviceScan(verbose = False):
+    """Scans your network for smart plug devices
+        devices = tuyapower.deviceScan(verbose)
+
+    Parameters:
+        verbose = True or False, print formatted output to stdout
+
+    Response: 
+        devices = Dictionary of all devices found with power data if available
+
+    To unpack data, you can do something like this:
+
+        devices = tuyapower.deviceScan()
+        for ip in devices:
+            id = devices[ip]['gwId']
+            key = devices[ip]['productKey']
+            vers = devices[ip]['version']
+            (on, w, mA, V, err) = deviceInfo(id, ip, key, vers)
+            print("Device at %s: ID %s, state=%s, W=%s, mA=%s, V=%s [%s]"%(ip,id,on,w,mA,V,err))
+
+    """
+     # Enable UDP lisenting broadcasting mode on UDP port 6666 - 3.1 Devices
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) 
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    client.bind(("", UDPPORT))
+    client.settimeout(TIMEOUT) 
+    # Enable UDP lisenting broadcasting mode on encrypted UDP port 6667 - 3.3 Devices
+    clients = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) 
+    clients.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    clients.bind(("", UDPPORTS))
+    clients.settimeout(TIMEOUT)
+
+    if(verbose):
+        print("Scanning on UDP ports %s and %s for devices...\n"%(UDPPORT,UDPPORTS))
+
+    # globals
+    devices={}
+    count = 0
+    counts = 0
+    spinnerx = 0
+    spinner = "|/-\\|"
+
+    while (count + counts) <= MAXCOUNT:
+        note = 'invalid'
+        if(verbose):
+            print("Scanning... %s\r"%(spinner[spinnerx]), end = '')
+            spinnerx = (spinnerx + 1) % 4
+
+        if (count <= counts):  # alternate between 6666 and 6667 ports
+            try:
+                data, addr = client.recvfrom(4048)
+            except:
+                # Timeout
+                count = count + 1
+                continue
+        else:
+            try:
+                data, addr = clients.recvfrom(4048)
+            except:
+                # Timeout
+                counts = counts + 1
+                continue
+        if(DEBUG): 
+            print("* Message from [%s]: %s\n"%addr,data)
+        ip = addr[0]
+        gwId = productKey = version = ""
+        result = data
+        try: 
+            result = data[20:-8]
+            try:
+                result = decrypt_udp(result)
+            except:
+                result = result.decode()
+
+            result = json.loads(result)
+
+            note = 'Valid'
+            ip = result['ip']
+            gwId = result['gwId']
+            productKey = result['productKey']
+            version = result['version']
+        except:
+            if(DEBUG):
+                print("*  Unexpected payload=%r\n", result)
+            result = {"ip": ip}
+            note = "Unknown"
+
+        # check to see if we have seen this device before and add to devices array
+        if appenddevice(result, devices) == False:
+            # new device found - back off count if we keep getting new devices
+            if(version=='3.1'):
+                count = floor(count - 1)
+            else:
+                counts = floor(counts - 1)
+            if(verbose):
+                print("FOUND Device [%s payload]: %s\n    ID = %s, productKey = %s, Version = %s" % (note,ip,gwId,productKey,version))
+            try:
+                if(version == '3.1'):
+                    # Version 3.1 - no device key requires - poll for status
+                    (on, w, mA, V, err) = deviceInfo(gwId, ip, productKey, version)
+                    if(verbose):
+                        if(w == -99):
+                            print("    Stats: on=%s [%s]"%(on,err))
+                        else:    
+                            print("    Stats: on=%s, W=%s, mA=%s, V=%s [%s]"%(on,w,mA,V,err))
+                    devices[ip]['on'] = on
+                    devices[ip]['w'] = w
+                    devices[ip]['mA'] = mA
+                    devices[ip]['V'] = V
+                    devices[ip]['err'] = err
+                else:
+                    # Version 3.3+ requies device key
+                    if(verbose):
+                        print("    Device Key required to poll for stats")
+            except:
+                if(verbose):
+                    print("    No Stats for %s: Unable to poll"%ip)
+                devices[ip]['err'] = 'Unable to poll'
+        else:
+            if(version=='3.1'):
+                count = count + 1
+            else:
+                counts = counts + 1
+
+    if(verbose):
+        print("                    \nScan Complete!  Found %s devices.\n"%len(devices))
+        
+    return(devices)
+    
