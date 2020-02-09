@@ -1,0 +1,1 @@
+from checkresource import main
