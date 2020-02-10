@@ -1,0 +1,247 @@
+# -----------------------------------------------------------------------------
+#   Copyright (C): OpenGATE Collaboration
+#   This software is distributed under the terms
+#   of the GNU Lesser General  Public Licence (LGPL)
+#   See LICENSE.md for further details
+# -----------------------------------------------------------------------------
+
+"""
+
+This module provides a function to convert image from one type to another:
+
+"""
+
+# -----------------------------------------------------------------------------
+#   Copyright (C): OpenGATE Collaboration
+#   This software is distributed under the terms
+#   of the GNU Lesser General  Public Licence (LGPL)
+#   See LICENSE.md for further details
+# -----------------------------------------------------------------------------
+
+
+import itk
+import pydicom
+from pydicom.tag import Tag
+import gatetools as gt
+import numpy as np
+import logging
+logger=logging.getLogger(__name__)
+
+
+class dicom_properties:
+    def __init__(self):
+        self.spacing = [1.0, 1.0, 1.0]
+        self.origin = [0.0, 0.0, 0.0]
+        self.io = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        self.rs = 1.0
+        self.ri = 0.0
+        self.image_shape = []
+
+    def read_dicom_properties(self, slice):
+        # pixel aspects, assuming all slices are the same
+
+        ps = [1.0, 1.0]
+        if Tag(0x28, 0x30) in slice:
+            ps = slice.PixelSpacing
+        ss = 1.0
+        if Tag(0x18, 0x50) in slice:
+            ss = slice.SliceThickness
+        self.spacing = [ps[0], ps[1], ss]
+        ip = [0.0, 0.0, 0.0]
+        if Tag(0x20, 0x32) in slice:
+            ip = slice[0x20, 0x32].value #Image Position
+        elif Tag(0x54, 0x22) in slice and Tag(0x20, 0x32) in slice[0x54, 0x22][0]:
+            ip = slice[0x54, 0x22][0][0x20, 0x32].value #Image Position
+        self.origin = [ip[0], ip[1], ip[2]]
+        if Tag(0x20, 0x37) in slice:
+            self.io = slice[0x20, 0x37].value #Image Orientation
+        elif Tag(0x54, 0x22) in slice and Tag(0x20, 0x37) in slice[0x54, 0x22][0]:
+            self.io = slice[0x54, 0x22][0][0x20, 0x37].value #Image Orientation
+        if self.io == "":
+            self.io = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        #orientation = [io[0], io[1], io[2], io[3], io[4], io[5]]
+        if Tag(0x28, 0x1052) in slice:
+            self.ri = slice[0x28, 0x1052].value #Rescale Intercept
+            self.rs = slice[0x28, 0x1053].value #Rescale Slope
+        elif Tag(0x11, 0x103b) in slice:
+            self.rs = slice[0x11, 0x103b].value #Rescale Intercept
+            self.ri = slice[0x11, 0x103c].value #Rescale Slope
+        elif Tag(0x40, 0x9096) in slice and Tag(0x40, 0x9224) in slice[0x40, 0x9096][0]:
+            self.ri = slice[0x40, 0x9096][0][0x40, 0x9224].value #Rescale Intercept
+            self.rs = slice[0x40, 0x9096][0][0x40, 0x9225].value #Rescale Slope
+        elif Tag(0x3004, 0x000e) in slice:
+            self.rs = slice[0x3004, 0x000e].value #Rescale Slope
+        if hasattr(self.ri, '__len__'):
+            self.ri = self.ri[0]
+        if hasattr(self.rs, '__len__'):
+            self.rs = self.rs[0]
+
+        self.img_shape = list(slice.pixel_array.shape)
+
+
+def read_dicom(dicomFiles):
+    """
+
+    Read dicom files and return an float 3D image
+    """
+    files = []
+    #Load dicom files
+    for file in dicomFiles:
+        files.append(pydicom.read_file(file))
+
+    # skip files with no SliceLocation (eg scout views)
+    slices = []
+    skipcount = 0
+    if len(files) > 1:
+        for f in files:
+            if hasattr(f, 'SliceLocation'):
+                slices.append(f)
+            else:
+                skipcount = skipcount + 1
+
+        if skipcount >0:
+            logger.info("skipped, no SliceLocation: {}".format(skipcount))
+
+        # ensure they are in the correct order
+        slices = sorted(slices, key=lambda s: s.SliceLocation)
+    else:
+        logger.error('no file available')
+        return
+
+    dicomProperties = dicom_properties()
+    dicomProperties.read_dicom_properties(slices[0])
+
+    # create 3D array
+    dicomProperties.img_shape[0] = len(slices)
+    dicomProperties.img_shape.append(slices[0].pixel_array.shape[0])
+    img3d = np.zeros(dicomProperties.img_shape)
+
+    # fill 3D array with the images from the files
+    for i, s in enumerate(slices):
+        img2d = s.pixel_array
+        img3d[i, :, :] = img2d
+    img3d = dicomProperties.rs*img3d+dicomProperties.ri
+
+    img_result = itk.image_from_array(np.float32(img3d))
+    img_result.SetSpacing(dicomProperties.spacing)
+    img_result.SetOrigin(dicomProperties.origin)
+    arrayDirection = np.zeros([3,3], np.float64)
+    arrayDirection[0,0] = dicomProperties.io[0]
+    arrayDirection[0,1] = dicomProperties.io[1]
+    arrayDirection[0,2] = dicomProperties.io[2]
+    arrayDirection[1,0] = dicomProperties.io[3]
+    arrayDirection[1,1] = dicomProperties.io[4]
+    arrayDirection[1,2] = dicomProperties.io[5]
+    arrayDirection[2,:] = np.cross(arrayDirection[0,:], arrayDirection[1,:])
+    matrixItk = itk.Matrix[itk.D,3,3](itk.GetVnlMatrixFromArray(arrayDirection))
+    img_result.SetDirection(matrixItk)
+    return img_result
+
+
+def read_3d_dicom(dicomFile):
+    """
+
+    Read dicom file and return an float 3D image
+    """
+    files = []
+    files.append(pydicom.read_file(dicomFile[0]))
+
+    # skip files with no SliceLocation (eg scout views)
+    slices = []
+    if len(files) == 1:
+        slices.append(files[0])
+    else:
+        logger.error('no file available')
+        return
+
+    dicomProperties = dicom_properties()
+    dicomProperties.read_dicom_properties(slices[0])
+
+    # create 3D array
+    if len(slices[0].pixel_array.shape) == 2:
+        dicomProperties.img_shape = [1] + dicomProperties.img_shape
+    img3d = np.zeros(dicomProperties.img_shape)
+
+    # fill 3D array with the images from the files
+    if len(slices[0].pixel_array.shape) == 2:
+        img3d[0, :, :] = slices[0].pixel_array
+    else:
+        img3d[:, :, :] = slices[0].pixel_array
+    img3d = dicomProperties.rs*img3d+dicomProperties.ri
+
+    img_result = itk.image_from_array(np.float32(img3d))
+    img_result.SetSpacing(dicomProperties.spacing)
+    img_result.SetOrigin(dicomProperties.origin)
+    arrayDirection = np.zeros([3,3], np.float64)
+    arrayDirection[0,0] = dicomProperties.io[0]
+    arrayDirection[0,1] = dicomProperties.io[1]
+    arrayDirection[0,2] = dicomProperties.io[2]
+    arrayDirection[1,0] = dicomProperties.io[3]
+    arrayDirection[1,1] = dicomProperties.io[4]
+    arrayDirection[1,2] = dicomProperties.io[5]
+    arrayDirection[2,:] = np.cross(arrayDirection[0,:], arrayDirection[1,:])
+    if Tag(0x18, 0x88) in slices[0] and slices[0][0x18, 0x88].value <0:
+        arrayDirection[2,2] = -1.0
+    else:
+        arrayDirection[2,2] = 1.0
+    matrixItk = itk.Matrix[itk.D,3,3](itk.GetVnlMatrixFromArray(arrayDirection))
+    img_result.SetDirection(matrixItk)
+    return img_result
+
+def image_convert(inputImage, pixeltype=None):
+    """
+    Compute relative statistical uncertainty 
+
+    - inputImage: input itk image to convert
+    - pixeltype: string representing the type of the output pixel:
+        - unsigned char
+        - signed short
+        - unsigned short
+        - float
+    """
+
+    #If pixel type is not None, convert it,
+    #If None it could be a type conversion without pixel conversion
+    if pixeltype is not None:
+        InputType = type(inputImage)
+        OutputType = itk.Image[itk.ctype(pixeltype), inputImage.GetImageDimension()]
+        castFilter = itk.CastImageFilter[InputType, OutputType].New()
+        castFilter.SetInput(inputImage)
+        return castFilter
+
+    return inputImage
+
+#####################################################################################
+import unittest
+import hashlib
+import os
+import tempfile
+import shutil
+import wget
+from .logging_conf import LoggedTestCase
+
+class Test_Convert(LoggedTestCase):
+    def test_convert(self):
+        x = np.arange(-10, 10, 1)
+        y = np.arange(-12, 15, 1)
+        z = np.arange(-13, 10, 1)
+        xx, yy, zz = np.meshgrid(x, y, z)
+        image = itk.image_from_array(np.float32(xx))
+        convertedImage = image_convert(image, "unsigned char")
+        tmpdirpath = tempfile.mkdtemp()
+        itk.imwrite(convertedImage, os.path.join(tmpdirpath, "testConvert.mha"))
+        with open(os.path.join(tmpdirpath, "testConvert.mha"),"rb") as fnew:
+            bytesNew = fnew.read()
+            new_hash = hashlib.sha256(bytesNew).hexdigest()
+            self.assertTrue("da57bf05ec62b9b5ee2aaa71aacbf7dbca8acbf2278553edc499a3af8007dd44" == new_hash)
+        shutil.rmtree(tmpdirpath)
+    def test_convert_rtDose(self):
+        tmpdirpath = tempfile.mkdtemp()
+        filenameRTDose = wget.download("https://github.com/OpenGATE/GateTools/raw/master/dataTest/rtdose.dcm", out=tmpdirpath, bar=None)
+        convertedImage = read_3d_dicom([os.path.join(tmpdirpath, filenameRTDose)])
+        itk.imwrite(convertedImage, os.path.join(tmpdirpath, "testConvert.mha"))
+        with open(os.path.join(tmpdirpath, "testConvert.mha"),"rb") as fnew:
+            bytesNew = fnew.read()
+            new_hash = hashlib.sha256(bytesNew).hexdigest()
+            self.assertTrue("9c18c0344e309d096122c4b771fe3f1e66ddb778d818f98d18f29442fd287d47" == new_hash)
+        shutil.rmtree(tmpdirpath)
