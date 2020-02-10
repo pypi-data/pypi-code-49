@@ -1,0 +1,3 @@
+
+class BGOncoTreeError(Exception):
+    pass
