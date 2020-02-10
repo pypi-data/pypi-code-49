@@ -1,0 +1,46 @@
+# -*- coding: utf-8
+import os
+import logging
+import click
+
+from ..lib.seq2seq import Sequence2Sequence
+
+@click.command()
+@click.option('-m', '--load-model', default="model.h5", help='model file to load',
+              type=click.Path(dir_okay=False, exists=True))
+# click.File is impossible since we do not now a priori whether
+# we have to deal with pickle dumps (mode 'rb', includes confidence)
+# or plain text files (mode 'r')
+@click.option('-f', '--fast', is_flag=True, help='only decode greedily')
+@click.option('-r', '--rejection', default=0.5, type=click.FloatRange(0,1.0),
+              help='probability of the input characters in all hypotheses (set 0 to use raw predictions)')
+@click.option('-n', '--normalization', default='historic_latin', type=click.Choice(
+    ["Levenshtein", "NFC", "NFKC", "historic_latin"]),
+              help='normalize character sequences before alignment/comparison (set Levenshtein for none)')
+@click.option('-l', '--gt-level', default=1, type=click.IntRange(1,3),
+              help='GT transcription level to use for historic_latin normlization (1: strongest, 3: none)')
+@click.option('-c', '--confusion', default=10, type=click.IntRange(min=0),
+              help='show this number of most frequent (non-identity) edits (set 0 for none)')
+@click.argument('data', nargs=-1, type=click.Path(dir_okay=False, exists=True))
+def cli(load_model, fast, rejection, normalization, gt_level, confusion, data):
+    """Evaluate a correction model.
+    
+    Load a sequence-to-sequence model from the given path.
+    
+    Then apply on the file paths `data`, comparing predictions
+    (both greedy and beamed) with GT target, and measuring
+    error rates.
+    """
+    if not 'TF_CPP_MIN_LOG_LEVEL' in os.environ:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+    logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)s %(name)s - %(message)s',
+                        datefmt='%H:%M:%S')
+    logging.getLogger(__name__).setLevel(logging.INFO)
+    
+    s2s = Sequence2Sequence(logger=logging.getLogger(__name__), progbars=True)
+    s2s.load_config(load_model)
+    s2s.configure()
+    s2s.load_weights(load_model)
+    s2s.rejection_threshold = rejection
+    
+    s2s.evaluate(data, fast, normalization, gt_level, confusion)
