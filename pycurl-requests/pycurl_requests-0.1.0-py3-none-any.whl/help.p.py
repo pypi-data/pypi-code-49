@@ -1,0 +1,2 @@
+def info():
+    raise NotImplementedError
