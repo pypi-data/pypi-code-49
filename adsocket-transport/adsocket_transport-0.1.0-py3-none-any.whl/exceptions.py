@@ -1,0 +1,3 @@
+
+class ADSocketException(Exception):
+    pass
