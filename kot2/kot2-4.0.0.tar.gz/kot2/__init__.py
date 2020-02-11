@@ -1,0 +1,1 @@
+from kot2.kot2 import Weather
