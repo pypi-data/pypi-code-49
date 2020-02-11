@@ -1,0 +1,1 @@
+import snnw.dataset.mnist
