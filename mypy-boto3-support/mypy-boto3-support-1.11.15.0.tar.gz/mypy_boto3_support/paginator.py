@@ -1,0 +1,65 @@
+"""
+Main interface for support service client paginators.
+
+Usage::
+
+    import boto3
+    from mypy_boto3.support import (
+        DescribeCasesPaginator,
+        DescribeCommunicationsPaginator,
+    )
+
+    client: SupportClient = boto3.client("support")
+
+    describe_cases_paginator: DescribeCasesPaginator = client.get_paginator("describe_cases")
+    describe_communications_paginator: DescribeCommunicationsPaginator = client.get_paginator("describe_communications")
+"""
+# pylint: disable=arguments-differ,redefined-outer-name,redefined-builtin
+from typing import Generator, List, TYPE_CHECKING
+from botocore.paginate import Paginator as Boto3Paginator
+from mypy_boto3_support.type_defs import (
+    DescribeCasesResponseTypeDef,
+    DescribeCommunicationsResponseTypeDef,
+    PaginatorConfigTypeDef,
+)
+
+
+__all__ = ("DescribeCasesPaginator", "DescribeCommunicationsPaginator")
+
+
+class DescribeCasesPaginator(Boto3Paginator):
+    """
+    [Paginator.DescribeCases documentation](https://boto3.amazonaws.com/v1/documentation/api/1.11.15/reference/services/support.html#Support.Paginator.DescribeCases)
+    """
+
+    def paginate(
+        self,
+        caseIdList: List[str] = None,
+        displayId: str = None,
+        afterTime: str = None,
+        beforeTime: str = None,
+        includeResolvedCases: bool = None,
+        language: str = None,
+        includeCommunications: bool = None,
+        PaginationConfig: PaginatorConfigTypeDef = None,
+    ) -> Generator[DescribeCasesResponseTypeDef, None, None]:
+        """
+        [DescribeCases.paginate documentation](https://boto3.amazonaws.com/v1/documentation/api/1.11.15/reference/services/support.html#Support.Paginator.DescribeCases.paginate)
+        """
+
+
+class DescribeCommunicationsPaginator(Boto3Paginator):
+    """
+    [Paginator.DescribeCommunications documentation](https://boto3.amazonaws.com/v1/documentation/api/1.11.15/reference/services/support.html#Support.Paginator.DescribeCommunications)
+    """
+
+    def paginate(
+        self,
+        caseId: str,
+        beforeTime: str = None,
+        afterTime: str = None,
+        PaginationConfig: PaginatorConfigTypeDef = None,
+    ) -> Generator[DescribeCommunicationsResponseTypeDef, None, None]:
+        """
+        [DescribeCommunications.paginate documentation](https://boto3.amazonaws.com/v1/documentation/api/1.11.15/reference/services/support.html#Support.Paginator.DescribeCommunications.paginate)
+        """
