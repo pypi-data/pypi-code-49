@@ -1,0 +1,41 @@
+import pandas as pd
+
+from numpy.random import choice
+
+
+def prevalence(df, thresh=0, count=False):
+    """Return the prevalence* of each column in a dataframe.
+
+    *Fraction of occurences above thresh
+    """
+    return (df > thresh).sum(axis=0) / (1 if count else df.shape[0])
+
+
+def proportions(tbl):
+    tbl = (tbl.T / tbl.T.sum()).T
+    return tbl
+
+
+def subsample_row(row, n, drop=True):
+    pvals = row.values
+    pvals /= sum(pvals)
+    vals = choice(row.index, p=pvals, size=(n,))
+    tbl = {}
+    if not drop:
+        for val in row.index:
+            tbl[val] = 0
+    for val in vals:
+        tbl[val] = 1 + tbl.get(val, 0)
+    tbl = pd.Series(tbl)
+    return tbl
+
+
+def subsample(tbl, n=-1, niter=1):
+    if n <= 0:
+        n = int(tbl.T.sum().min())
+    tbl = pd.concat([
+        tbl.apply(lambda row: subsample_row(row, n), axis=1).fillna(0)
+        for _ in range(niter)
+    ])
+    tbl = proportions(tbl)
+    return tbl
