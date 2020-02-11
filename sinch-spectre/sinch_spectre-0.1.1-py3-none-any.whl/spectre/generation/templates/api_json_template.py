@@ -1,0 +1,1 @@
+RESOURCE_DESCRIPTION = 'CRUD interface for _RESOURCE_ entities'
