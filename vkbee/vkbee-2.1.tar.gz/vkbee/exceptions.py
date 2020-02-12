@@ -1,0 +1,1 @@
+class api_error(Exception): pass
