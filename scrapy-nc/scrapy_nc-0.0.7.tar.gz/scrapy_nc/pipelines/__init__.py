@@ -1,0 +1,1 @@
+from .amqp_pipeline import AMQPPipeline
