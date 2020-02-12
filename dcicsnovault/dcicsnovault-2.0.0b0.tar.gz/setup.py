@@ -1,0 +1,125 @@
+# -*- coding: utf-8 -*-
+from setuptools import setup
+
+package_dir = \
+{'': '.'}
+
+packages = \
+['snovault', 'snovault.commands', 'snovault.elasticsearch', 'snovault.tests']
+
+package_data = \
+{'': ['*'], 'snovault': ['test_schemas/*']}
+
+install_requires = \
+['MarkupSafe==0.23',
+ 'PasteDeploy==1.5.2',
+ 'Pillow==3.3.0',
+ 'PyBrowserID==0.11.0',
+ 'PyYAML==3.12',
+ 'SPARQLWrapper==1.7.6',
+ 'SQLAlchemy==1.2.16',
+ 'WSGIProxy2==0.4.2',
+ 'WebOb==1.8.5',
+ 'WebTest==2.0.21',
+ 'aws-requests-auth==0.4.1',
+ 'awscli==1.15.42',
+ 'bcrypt==3.1.0',
+ 'beautifulsoup4==4.4.1',
+ 'boto3==1.7.42',
+ 'botocore==1.10.42',
+ 'certifi==2018.11.29',
+ 'cffi==1.7.0',
+ 'chardet==3.0.4',
+ 'colorama==0.3.7',
+ 'coverage==4.1',
+ 'cryptacular==1.4.1',
+ 'dcicutils==0.8.5',
+ 'docutils==0.12',
+ 'elasticsearch-dsl==5.3.0',
+ 'elasticsearch==5.5.3',
+ 'flaky==3.6.1',
+ 'future==0.15.2',
+ 'futures==3.1.1',
+ 'html5lib==1.0b8',
+ 'humanfriendly==1.44.7',
+ 'hupper==1.5',
+ 'idna==2.7',
+ 'isodate==0.5.4',
+ 'jmespath==0.9.0',
+ 'jsonschema-serialize-fork==2.1.1',
+ 'keepalive==0.5',
+ 'loremipsum==1.0.5',
+ 'netaddr==0.7.18',
+ 'passlib==1.6.5',
+ 'pbkdf2==1.3',
+ 'plaster-pastedeploy==0.6',
+ 'plaster==1.0',
+ 'psutil==4.3.0',
+ 'psycopg2==2.7.3',
+ 'py==1.4.31',
+ 'pyasn1==0.1.9',
+ 'pycparser==2.14',
+ 'pyparsing==2.2.0',
+ 'pyramid-localroles==0.1',
+ 'pyramid-multiauth==0.8.0',
+ 'pyramid-retry==1.0',
+ 'pyramid-tm==2.2.1',
+ 'pyramid-translogger==0.1',
+ 'pyramid==1.10.4',
+ 'pytest-cov==2.2.1',
+ 'pytest-exact-fixtures==0.1',
+ 'pytest-instafail==0.3.0',
+ 'pytest-mock==0.11.0',
+ 'pytest-runner==4.2',
+ 'pytest-timeout==1.0.0',
+ 'pytest==2.9.1',
+ 'python-dateutil==2.5.3',
+ 'python-magic==0.4.11',
+ 'pytz==2016.4',
+ 'rdflib-jsonld==0.4.0',
+ 'rdflib==4.2.2',
+ 'requests==2.20.0',
+ 'rfc3987==1.3.6',
+ 'rsa==3.4.2',
+ 'rutter==0.2',
+ 's3transfer==0.1.13',
+ 'setuptools>=36.6.0,<37.0.0',
+ 'simplejson==3.8.2',
+ 'six==1.14.0',
+ 'strict-rfc3339==0.7',
+ 'structlog==18.1.0',
+ 'subprocess-middleware==0.3',
+ 'transaction==2.4.0',
+ 'translationstring==1.3',
+ 'urllib3==1.23',
+ 'venusian==1.2.0',
+ 'waitress==1.2.0',
+ 'xlrd==1.0.0',
+ 'zope-deprecation==4.4.0',
+ 'zope-interface==4.6.0',
+ 'zope-sqlalchemy==1.2']
+
+entry_points = \
+{'console_scripts': ['wipe-test-indices = '
+                     'snovault.commands.wipe_test_indices:main']}
+
+setup_kwargs = {
+    'name': 'dcicsnovault',
+    'version': '2.0.0b0',
+    'description': 'Storage support for 4DN Data Portals.',
+    'long_description': '========\nSnovault\n========\n\n|Build status|_\n\n.. |Build status| image:: https://travis-ci.org/4dn-dcic/snovault.svg?branch=master\n.. _Build status: https://travis-ci.org/4dn-dcic/snovault\n\nOverview\n========\n\nSnovault is a JSON-LD Database Framework that serves as the backend for the 4DN Data portal and CGAP. Check out our full documentation `here\n<https://snovault.readthedocs.io/en/latest/>`_.\n\n\nInstallation\n============\n\nCurrently these are for Mac OSX using homebrew. If using linux, install dependencies with a different package manager.\n\nStep 0: Install Xcode\n---------------------\n\nInstall Xcode (from App Store) and homebrew: http://brew.sh\n\nStep 1: Verify Homebrew Itself\n------------------------------\n\nVerify that homebrew is working properly::\n\n    $ brew doctor\n\nStep 2: Install Homebrewed Dependencies\n---------------------------------------\n\nInstall or update dependencies::\n\n    $ brew install libevent libmagic libxml2 libxslt openssl postgresql graphviz python3\n    $ brew install freetype libjpeg libtiff littlecms webp  # Required by Pillow\n    $ brew cask install adoptopenjdk8\n    $ brew install elasticsearch@5.6\n\nNOTES:\n\n* If installation of adtopopenjdk8 fails due to an ambiguity, it should work to do this instead::\n\n    $ brew cask install homebrew/cask-versions/adoptopenjdk8\n\n* If you try to invoke elasticsearch and it is not found,\n  you may need to link the brew-installed elasticsearch::\n\n    $ brew link --force elasticsearch@5.6\n\n* If you need to update dependencies::\n\n    $ brew update\n    $ rm -rf encoded/eggs\n\n* If you need to upgrade brew-installed packages that don\'t have pinned versions,\n  you can use the following. However, take care because there is no command to directly\n  undo this effect::\n\n    $ brew update\n    $ brew upgrade\n    $ rm -rf encoded/eggs\n\nStep 3: Running Buildout\n------------------------\n\nRun buildout::\n\n    $ python3 bootstrap.py --buildout-version 2.9.5 --setuptools-version 36.6.0\n    $ bin/buildout\n\n\nNOTES:\n\n* If you have issues with postgres or the python interface to it (psycogpg2)\n  you probably need to install postgresql via homebrew (as above)\n\n* If you have issues with Pillow you may need to install new xcode command line tools.\n\n  - First update Xcode from AppStore (reboot)::\n\n      $ xcode-select --install\n\n  - If you are running macOS Mojave (though this is fixed in Catalina), you may need to run this command as well::\n\n      $ sudo installer -pkg /Library/Developer/CommandLineTools/Packages/macOS_SDK_headers_for_macOS_10.14.pkg -target /\n\n  - If you have trouble with zlib, especially in Catalina, it is probably because brew installed it\n    in a different location. In that case, you\'ll want to do the following\n    in place of the regular call to buildout::\n\n      $ CFLAGS="-I$(brew --prefix zlib)/include" LDFLAGS="-L$(brew --prefix zlib)/lib" bin/buildout\n\n* If you wish to completely rebuild the application, or have updated dependencies,\n  before you go ahead, you\'ll probably want to do::\n\n    $ make clean\n\n  Then goto Step 3.\n\nRunning tests\n=============\n\nTo run specific tests locally::\n\n    $ bin/test -k test_name\n\nTo run with a debugger::\n\n    $ bin/test --pdb\n\nSpecific tests to run locally for schema changes::\n\n    $ bin/test -k test_load_workbook\n\nRun the Pyramid tests with::\n\n    $ bin/test\n\n',
+    'author': '4DN-DCIC Team',
+    'author_email': 'support@4dnucleome.org',
+    'maintainer': None,
+    'maintainer_email': None,
+    'url': 'https://github.com/4dn-dcic/snovault',
+    'package_dir': package_dir,
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'entry_points': entry_points,
+    'python_requires': '>=3.4,<4.0',
+}
+
+
+setup(**setup_kwargs)
