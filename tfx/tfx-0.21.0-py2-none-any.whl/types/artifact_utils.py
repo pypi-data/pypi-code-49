@@ -1,0 +1,138 @@
+# Lint as: python2, python3
+# Copyright 2019 Google LLC. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""TFX Artifact utilities."""
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
+import json
+import os
+import re
+
+from typing import Dict, List, Text
+
+import absl
+
+from tfx.types.artifact import Artifact
+
+
+# TODO(ruoyu): Deprecate this function since it is no longer needed.
+def parse_artifact_dict(json_str      )                              :
+  """Parse a dict from key to list of Artifact from its json format."""
+  tfx_artifacts = {}
+  for k, l in json.loads(json_str).items():
+    tfx_artifacts[k] = [Artifact.from_json_dict(v) for v in l]
+  return tfx_artifacts
+
+
+# TODO(ruoyu): Deprecate this function since it is no longer needed.
+def jsonify_artifact_dict(artifact_dict                            )        :
+  """Serialize a dict from key to list of Artifact into json format."""
+  d = {}
+  for k, l in artifact_dict.items():
+    d[k] = [v.to_json_dict() for v in l]
+  return json.dumps(d)
+
+
+def get_single_instance(artifact_list                )            :
+  """Get a single instance of Artifact from a list of length one.
+
+  Args:
+    artifact_list: A list of Artifact objects whose length must be one.
+
+  Returns:
+    The single Artifact object in artifact_list.
+
+  Raises:
+    ValueError: If length of artifact_list is not one.
+  """
+  if len(artifact_list) != 1:
+    raise ValueError('expected list length of one but got {}'.format(
+        len(artifact_list)))
+  return artifact_list[0]
+
+
+def get_single_uri(artifact_list                )        :
+  """Get the uri of Artifact from a list of length one.
+
+  Args:
+    artifact_list: A list of Artifact objects whose length must be one.
+
+  Returns:
+    The uri of the single Artifact object in artifact_list.
+
+  Raises:
+    ValueError: If length of artifact_list is not one.
+  """
+  return get_single_instance(artifact_list).uri
+
+
+def get_split_uri(artifact_list                , split      )        :
+  """Get the uri of Artifact with matching split from given list.
+
+  Args:
+    artifact_list: A list of Artifact objects whose length must be one.
+    split: Name of split.
+
+  Returns:
+    The uri of Artifact object in artifact_list with matching split.
+
+  Raises:
+    ValueError: If number with matching split in artifact_list is not one.
+  """
+  matching_artifacts = []
+  for artifact in artifact_list:
+    split_names = decode_split_names(artifact.split_names)
+    if split in split_names:
+      matching_artifacts.append(artifact)
+  if len(matching_artifacts) != 1:
+    raise ValueError(
+        ('Expected exactly one artifact with split %r, but found matching '
+         'artifacts %s.') % (split, matching_artifacts))
+  return os.path.join(matching_artifacts[0].uri, split)
+
+
+def encode_split_names(splits            )        :
+  """Get the encoded representation of a list of split names."""
+  rewritten_splits = []
+  for split in splits:
+    # TODO(b/146759051): Remove workaround for RuntimeParameter object once
+    # this bug is clarified.
+    if split.__class__.__name__ == 'RuntimeParameter':
+      absl.logging.warning(
+          'RuntimeParameter provided for split name: this functionality may '
+          'not be supported in the future.')
+      split = str(split)
+      # Intentionally ignore split format check to pass through the template for
+      # now. This behavior is very fragile and should be fixed (see
+      # b/146759051).
+    elif not re.match('^([A-Za-z0-9][A-Za-z0-9_-]*)?$', split):
+      # TODO(ccy): Disallow empty split names once the importer removes split as
+      # a property for all artifacts.
+      raise ValueError(
+          ('Split names are expected to be alphanumeric (allowing dashes and '
+           'underscores, provided they are not the first character); got %r '
+           'instead.') % (split,))
+    rewritten_splits.append(split)
+  return json.dumps(rewritten_splits)
+
+
+def decode_split_names(split_names      )              :
+  """Decode an encoded list of split names."""
+  if not split_names:
+    return []
+  return json.loads(split_names)
