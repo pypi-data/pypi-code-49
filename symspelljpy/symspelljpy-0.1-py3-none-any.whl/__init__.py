@@ -1,0 +1,1 @@
+from symspelljpy.core import SymSpellClient
