@@ -1,0 +1,217 @@
+import os
+
+import pyotp
+from contextlib import asynccontextmanager, suppress
+
+from aiohttp import web
+from cryptography.fernet import InvalidToken
+
+from . import ALLOWED_OPERATIONS
+from .auth.context import AuthContext
+from .exceptions import HTTPShieldedResource
+from .utils import generate_num_sequence
+from .view import AuxViewBase
+
+APP_MODE = os.environ.get('APP_MODE', 'test')
+
+
+def set_init_logging_context(request):
+    try:
+        IP = request.transport.get_extra_info('peername')[0]
+    except (IndexError, AttributeError):
+        IP = '0.0.0.0'
+    request.app.info_logger = request.app.info_logger.renew(ip=IP)
+    request.app.error_logger = request.app.error_logger.renew(ip=IP)
+
+
+def set_logging_context(app, **context):
+    app.info_logger = app.info_logger.bind(**context)
+    app.error_logger = app.error_logger.bind(**context)
+
+
+@asynccontextmanager
+async def switch_workspace(request):
+    overwrite_to = request.headers.get('Overwrite', '')
+    request.is_overwritten = False
+    all_workspaces = [overwrite_to]
+
+    try:
+        calling_workspace = None
+        if overwrite_to:
+            with suppress(AttributeError):
+                all_workspaces = request.session.workspaces
+
+            if overwrite_to not in all_workspaces:
+                raise web.HTTPPreconditionFailed(reason='Workspace not found or outside of scope')
+
+            with suppress(AttributeError):
+                calling_workspace = request.session.workspace
+                request.is_overwritten = True
+                request.session._session_ctxt['workspace'] = overwrite_to
+
+        yield request
+
+    finally:
+        if calling_workspace:
+            # session exists AND Overwrite header has been used
+            request.session._session_ctxt['workspace'] = calling_workspace
+
+
+async def prepare_shielded_response(request, handler):
+    if 'shield' not in request.app.installed_plugins:
+        return await handler(request)
+
+    async def make_shielded_response(cause, shield_method):
+        # TODO rate limiting
+        code = generate_num_sequence(6)
+        payload = f'{request.path}:{request.session.actor_id}:{code}'
+        shield_token = request.app.commons.encrypt(payload)
+        context = {'method': shield_method, 'cause': cause}
+
+        if shield_method == 'sms':
+            if APP_MODE == 'test':
+                context['code'] = code
+            else:
+                msg = request.app.config.sms_shield_msg.format(code=code)
+                await request.app.send_sms(request, request.session.phone, msg)
+        elif shield_method == 'otp' and APP_MODE == 'test':
+            totp = pyotp.TOTP(request.session.otp_secret)
+            context['code'] = totp.now()
+
+        resp = HTTPShieldedResource(context)
+        resp.set_cookie(request.app.config.shield_cookie,
+                        shield_token,
+                        httponly=True,
+                        max_age=180)
+        return resp
+
+    shields = {}
+    with suppress(AttributeError, TypeError):
+        if issubclass(handler, AuxViewBase):
+            shields = handler.shields
+        else:
+            shields = handler.schema_cls.shields
+
+    if request.session and request.session.is_authed and shields:
+        shieldcode = request.query.get('shieldcode')
+        shield_context = None
+        shield_method = None
+        with suppress(AttributeError, KeyError):
+            shield_context = shields[request.operation]
+            cookie_name = request.app.config.shield_cookie
+            shield_cookie = request.cookies.get(cookie_name, None)
+
+        if shield_context:
+            held_roles = set(request.session.roles)
+            shielded_roles, shield_method = shield_context
+            if not shielded_roles & held_roles:
+                # The role on this op isn't shield, skip
+                return await handler(request)
+
+            if shield_cookie and shieldcode:
+                try:
+                    decrypted_payload = request.app.commons.decrypt(shield_cookie, ttl=200)
+                except InvalidToken:
+                    raise await make_shielded_response('Shield token invalid or expired', shield_method)
+                try:
+                    path, actor_id, submitted_code = decrypted_payload.split(":")
+                except ValueError:
+                    raise web.HTTPForbidden(reason='Shield token misconstructed')
+
+                if path == request.path and actor_id == request.session.actor_id:
+                    if shield_method == 'otp':
+                        totp = pyotp.TOTP(request.session.otp_secret)
+                        if totp.now() == shieldcode:
+                            resp = await handler(request)
+                            resp.del_cookie(cookie_name)
+                            return resp
+
+                    if shield_method == 'sms' and submitted_code == shieldcode:
+                        resp = await handler(request)
+                        resp.del_cookie(cookie_name)
+                        return resp
+
+                raise await make_shielded_response('Shield token invalid', shield_method)
+
+            raise await make_shielded_response('Shield token not supplied or invalid', shield_method)
+
+    return await handler(request)
+
+
+@web.middleware
+async def postschema_middleware(request, handler):
+    set_init_logging_context(request)
+
+    if '/actor/logout/' in request.path:
+        request.middleware_mode = 'public'
+        request.operation = request.method.lower()
+        return await handler(request)
+
+    try:
+        auth_ctxt = AuthContext(request, **handler._perm_options)
+    except AttributeError:
+        # e.g 404
+        request.operation = request.method.lower()
+        auth_ctxt = AuthContext(request)
+        auth_ctxt.request_type = 'public'
+        request.session = auth_ctxt
+        await auth_ctxt.set_session_context()
+        return await handler(request)
+    except TypeError:
+        if 'roles' in handler._perm_options:
+            request.operation = request.method.lower()
+            auth_ctxt = AuthContext(request)
+            auth_ctxt.request_type = 'authed'
+            await auth_ctxt.set_session_context()
+            if str(auth_ctxt.status) != '1':
+                raise web.HTTPForbidden(reason='Account inactive')
+            request.session = auth_ctxt
+            set_logging_context(request.app,
+                                op=auth_ctxt.operation,
+                                actor_id=auth_ctxt['actor_id'],
+                                workspace=auth_ctxt['workspace'])
+            auth_ctxt.authorize_standalone(**handler._perm_options)
+
+            async with switch_workspace(request):
+                resp = await prepare_shielded_response(request, handler)
+
+            resp.headers['ETag'] = request.app.spec_hash
+            return resp
+        raise
+
+    if request.method != 'POST':
+        raise web.HTTPMethodNotAllowed(request.method, allowed_methods=['POST'])
+
+    try:
+        op = request.headers['Range']
+    except KeyError:
+        raise web.HTTPBadRequest(reason='`Range` header is required to specify the operation name')
+
+    if op not in ALLOWED_OPERATIONS:
+        raise web.HTTPRequestRangeNotSatisfiable(reason=f'`{op}` is not a recognized operation name')
+
+    request.operation = op.lower()
+
+    auth_ctxt.set_level_permissions()
+    await auth_ctxt.set_session_context()
+
+    if auth_ctxt and str(auth_ctxt.status) != '1':
+        raise web.HTTPForbidden(reason='Account inactive')
+
+    extra_ctxt = {
+        'actor_id': auth_ctxt['actor_id'],
+        'workspace': auth_ctxt['workspace']
+    } if auth_ctxt.session_ctxt else {}
+
+    set_logging_context(request.app, op=auth_ctxt.operation, **extra_ctxt)
+    request.session = auth_ctxt
+
+    async with switch_workspace(request):
+        request.auth_conditions = auth_ctxt.authorize()
+        resp = await prepare_shielded_response(request, handler)
+
+    resp.headers['ETag'] = request.app.spec_hash
+    if request.session.delete_session_cookie:
+        request.app.info_logger.info('Deleting session cookie')
+        resp.del_cookie('postsession')
+    return resp
