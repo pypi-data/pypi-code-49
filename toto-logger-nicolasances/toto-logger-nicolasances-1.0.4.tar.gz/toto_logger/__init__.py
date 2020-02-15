@@ -1,0 +1,1 @@
+from toto_logger import TotoLogger
