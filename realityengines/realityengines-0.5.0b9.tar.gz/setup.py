@@ -1,0 +1,22 @@
+from setuptools import setup
+setup(name='realityengines',
+      version='0.5.0-BETA9',
+      description='RealityEngines.AI Python Client Library',
+      url='https://realityengines.ai',
+      author='RealityEngines.AI',
+      author_email='dev@realityengines.ai',
+      license='MIT',
+      packages=['realityengines'],
+      install_requires=['packaging', 'requests'],
+      zip_safe=True,
+      classifiers=[
+          'Development Status :: 4 - Beta',
+          'Intended Audience :: Developers',
+          'Topic :: Utilities',
+          'License :: OSI Approved :: MIT License',
+          'Programming Language :: Python :: 3',
+          'Programming Language :: Python :: 3.4',
+          'Programming Language :: Python :: 3.5',
+          'Programming Language :: Python :: 3.6',
+          'Programming Language :: Python :: 3.7',
+      ])
