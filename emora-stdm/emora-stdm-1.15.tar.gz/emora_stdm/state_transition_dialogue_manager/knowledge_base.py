@@ -1,0 +1,139 @@
+
+from structpy.graph.labeled_digraph import MapMultidigraph
+from structpy.graph import Database
+from structpy.graph.traversal import preset as traversal
+import json
+from collections import defaultdict
+import regex
+
+Graph = Database(MapMultidigraph)
+
+_type = 'type'
+_attr = 'attr'
+_expr = 'expr'
+
+
+class KnowledgeBase(Graph):
+
+    def __init__(self, arcs=None):
+        Graph.__init__(self)
+        if arcs is not None:
+            for s, r, o in arcs:
+                self.add_relation(s, r, o)
+
+    def query(self, node, *relations):
+        if isinstance(node, set):
+            result_set = set().union(node)
+        else:
+            result_set = {node}
+        for relation_set in relations:
+            new_result_set = set()
+            if not isinstance(relation_set, set):
+                relation_set = {relation_set}
+            for relation in relation_set:
+                if relation == '*':
+                    for n in result_set:
+                        new_result_set.update({x[1] for x in self.arcs_out(n)})
+                elif relation[0] == '~':
+                    relation = relation[1:]
+                    for n in result_set:
+                        if self.has_arc_label(n, relation):
+                            new_result_set.update({x[0] for x in self.arcs_in(n, relation)})
+                else:
+                    for n in result_set:
+                        if self.has_arc_label(n, relation):
+                            new_result_set.update({x[1] for x in self.arcs_out(n, relation)})
+            result_set = new_result_set
+        return result_set
+
+    def add_type(self, subtype, type):
+        self.add(subtype, type, _type)
+        if regex.fullmatch(r'[a-z A-Z]+', type):
+            self.add(type, type, _expr)
+        if regex.fullmatch(r'[a-z A-Z]+', subtype):
+            self.add(subtype, subtype, _expr)
+
+    def add_relation(self, subject, relation, object):
+        self.add(subject, object, relation)
+        if regex.fullmatch(r'[a-z A-Z]+', subject):
+            self.add(subject, subject, _expr)
+        if regex.fullmatch(r'[a-z A-Z]+', object):
+            self.add(object, object, _expr)
+
+    def add_expression(self, node, expression):
+        self.add(node, expression, _expr)
+        if regex.fullmatch(r'[a-z A-Z]+', node):
+            self.add(node, node, _expr)
+
+    def add_attr(self, type, attribute):
+        if _attr not in self.data(type):
+            self.data(type)[_attr] = set()
+        self.data(type)[_attr].add(attribute)
+
+    def types(self, node_set):
+        if not isinstance(node_set, set):
+            node_set = {node_set}
+        types = set()
+        for node in node_set:
+            if self.has_node(node):
+                s = set(traversal.BreadthFirstOnArcs(self, node, _type)) - {node}
+                types.update(s)
+        return types
+
+    def subtypes(self, node_set):
+        if not isinstance(node_set, set):
+            node_set = {node_set}
+        subtypes = set()
+        for node in node_set:
+            if self.has_node(node):
+                subtypes.update(set(traversal.BreadthFirstOnArcsReverse(self, node, _type)))
+        return subtypes
+
+    def expressions(self, node_set):
+        if not isinstance(node_set, set):
+            node_set = {node_set}
+        expressions = set()
+        for node in node_set:
+            if self.has_arc_label(node, _expr):
+                expressions.update({x[1] for x in self.arcs_out(node, _expr)})
+        return expressions
+
+    def to_json(self):
+        ontology_arcs = defaultdict(list)
+        expression_arcs = defaultdict(list)
+        relation_arcs = list()
+        for s, o, r in self.arcs():
+            if r == _type:
+                ontology_arcs[o].append(s)
+            elif r == _expr:
+                expression_arcs[s].append(o)
+            else:
+                relation_arcs.append([s, r, o])
+        return json.dumps({'ontology': ontology_arcs, 'predicates': relation_arcs,
+                           'expressions': expression_arcs}, indent=4, sort_keys=True)
+
+    def load_json_file(self, json_file):
+        f = open(json_file, "r")
+        d = json.load(f)
+        self.load_json(d)
+
+    def load_json_string(self, json_string):
+        d = json.loads(json_string)
+        self.load_json(d)
+
+    def load_json(self, d):
+        if 'ontology' in d:
+            ontology = d['ontology']
+            for k, l in ontology.items():
+                for e in l:
+                    self.add_type(e, k)
+        if 'predicates' in d:
+            relations = d['predicates']
+            for relation in relations:
+                s, r, o = tuple(relation)
+                self.add_relation(s, r, o)
+        if 'expressions' in d:
+            expressions = d['expressions']
+            for n, l in expressions.items():
+                for e in l:
+                    self.add_expression(n, e)
