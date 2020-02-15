@@ -1,0 +1,237 @@
+import argparse
+import appdirs
+import json
+import logging
+import numpy
+import os
+import pandas
+import time
+from ccxt.base.errors import NotSupported
+from ccxt.base.exchange import Exchange
+from enum import Enum, auto
+from functools import partial
+from btrccts.context import BacktestContext, LiveContext, StopException
+from btrccts.exchange_backend import ExchangeBackend
+from btrccts.timeframe import Timeframe
+
+USER_CONFIG_DIR = appdirs.user_config_dir(__package__)
+USER_DATA_DIR = appdirs.user_data_dir(__package__)
+SLEEP_SECONDS = 1
+HELP_EPILOG = """
+Default config directory: {data}
+Default data directory: {config}
+""".format(config=USER_CONFIG_DIR, data=USER_DATA_DIR)
+
+
+def load_ohlcvs(ohlcv_dir, exchange_names, symbols):
+    result = {}
+    complete_exchange = False
+    if len(symbols) == 0:
+        complete_exchange = True
+    for exchange_name in exchange_names:
+        exchange_result = {}
+        result[exchange_name] = exchange_result
+        exchange_path = os.path.join(ohlcv_dir, exchange_name)
+        if complete_exchange:
+            try:
+                symbols = []
+                for base in os.listdir(exchange_path):
+                    quote_path = os.path.join(exchange_path, base)
+                    if os.path.isdir(quote_path):
+                        for quote in os.listdir(quote_path):
+                            if quote.endswith('.csv'):
+                                symbols.append(os.path.join(base, quote[:-4]))
+            except (FileNotFoundError, NotADirectoryError):
+                raise FileNotFoundError(
+                    'Cannot find ohlcv directory for exchange ({})'
+                    .format(exchange_name))
+        for symbol in symbols:
+            file_path = os.path.join(exchange_path,
+                                     '{}.csv'.format(symbol))
+            try:
+                ohlcv = pandas.read_csv(
+                    file_path,
+                    index_col=0, parse_dates=[0], dtype=numpy.float,
+                    date_parser=partial(pandas.to_datetime, utc=True)
+                    )
+                exchange_result[symbol] = ohlcv
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    'Cannot find symbol ({}) file for exchange ({})'
+                    .format(symbol, exchange_name))
+            except ValueError:
+                raise ValueError(
+                    'Cannot parse symbol ({}) file for exchange ({})'
+                    .format(symbol, exchange_name))
+    return result
+
+
+class ExitReason(Enum):
+
+    STOPPED = auto()
+    EXCEPTION = auto()
+    FINISHED = auto()
+
+
+def sleep_until(date):
+    # Use a loop, so if the system clock changes, we dont sleep too long/short
+    while True:
+        now = pandas.Timestamp.now(tz='UTC')
+        if date <= now:
+            return
+        sleep_sec = SLEEP_SECONDS
+        diff = (date - now).value / 10**9
+        if diff < SLEEP_SECONDS:
+            sleep_sec = diff
+        time.sleep(sleep_sec)
+
+
+def main_loop(timeframe, algorithm, live=False):
+    logger = logging.getLogger(__package__)
+    logger.info('Starting main_loop')
+    while timeframe.date() is not None:
+        try:
+            algorithm.next_iteration()
+        except (SystemExit, KeyboardInterrupt, StopException) as e:
+            logger.info('Stopped because of {}: {}'.format(
+                type(e).__name__, e))
+            algorithm.exit(reason=ExitReason.STOPPED)
+            return algorithm
+        except BaseException as e:
+            logger.error('Error occured during next_iteration')
+            logger.exception(e)
+            try:
+                algorithm.handle_exception(e)
+            except BaseException as e:
+                logger.error(
+                    'Exiting because of exception in handle_exception')
+                logger.exception(e)
+                algorithm.exit(reason=ExitReason.EXCEPTION)
+                raise e
+        timeframe.add_timedelta()
+        if live:
+            # We already added a timedelta.
+            # If the algo took longer then timedelta,
+            # we want to do the next round immediately
+            timeframe.add_timedelta_until(pandas.Timestamp.now(tz='UTC'))
+            next_date = timeframe.date()
+            if next_date is not None:
+                sleep_until(next_date)
+    algorithm.exit(reason=ExitReason.FINISHED)
+    logger.info('Finished main_loop')
+    return algorithm
+
+
+def execute_algorithm(exchange_names, symbols, AlgorithmClass, args,
+                      start_balances,
+                      pd_start_date, pd_end_date, pd_timedelta,
+                      live, auth_aliases,
+                      data_dir=USER_DATA_DIR,
+                      conf_dir=USER_CONFIG_DIR):
+    timeframe = Timeframe(pd_start_date=pd_start_date,
+                          pd_end_date=pd_end_date,
+                          pd_timedelta=pd_timedelta)
+    ohlcv_dir = os.path.join(data_dir, 'ohlcv')
+    ohlcvs = load_ohlcvs(ohlcv_dir=ohlcv_dir,
+                         exchange_names=exchange_names,
+                         symbols=symbols)
+    if live:
+        context = LiveContext(timeframe=timeframe,
+                              conf_dir=conf_dir,
+                              auth_aliases=auth_aliases)
+    else:
+        exchange_backends = {}
+        for exchange_name in exchange_names:
+            exchange_backends[exchange_name] = ExchangeBackend(
+                timeframe=timeframe,
+                balances=start_balances.get(exchange_name, {}),
+                ohlcvs=ohlcvs.get(exchange_name, {}))
+        context = BacktestContext(timeframe=timeframe,
+                                  exchange_backends=exchange_backends)
+    algorithm = AlgorithmClass(context=context,
+                               args=args)
+    return main_loop(timeframe=timeframe,
+                     algorithm=algorithm,
+                     live=live)
+
+
+def parse_params_and_execute_algorithm(AlgorithmClass):
+    parser = argparse.ArgumentParser(
+        epilog=HELP_EPILOG, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('--start-date', default='',
+                        help='Date to start backtesting, ignored in live mode')
+    parser.add_argument('--end-date', default='2009-01-01',
+                        help='Date to end backtesting')
+    parser.add_argument('--timedelta', default='1m',
+                        help='Timedelta between each iteration')
+    parser.add_argument('--exchanges', default='',
+                        help='Exchange ids comma separated to load ohlcv')
+    parser.add_argument('--symbols', default='',
+                        help='Symbols (comma separated) to load ohlcv '
+                             'per exchange')
+    parser.add_argument('--data-directory', default=USER_DATA_DIR,
+                        help='directory where data is stored'
+                             ' (e.g. ohlcv data')
+    parser.add_argument('--config-directory', default=USER_CONFIG_DIR,
+                        help='directory where config is stored'
+                             ' (e.g. exchange parameters')
+    parser.add_argument('--auth-aliases', default='{}',
+                        help='Auth aliases for different exchange'
+                             ' config files')
+    parser.add_argument('--live', action='store_true',
+                        help='Trade live on exchanges')
+    parser.add_argument('--start-balances', default='{}',
+                        help='Balance at start (json): '
+                             '{"exchange": {"BTC": 3}}')
+    AlgorithmClass.configure_argparser(parser)
+    args = parser.parse_args()
+    logger = logging.getLogger(__package__)
+
+    def split_parameters(p):
+        if p == '':
+            return []
+        return p.split(',')
+
+    exchange_names = split_parameters(args.exchanges)
+    symbols = split_parameters(args.symbols)
+    if not args.live:
+        if len(exchange_names) == 0:
+            logger.warning('No exchanges specified, do not load ohlcv')
+        if len(symbols) == 0:
+            logger.warning('No symbols specified, load all ohlcvs per each '
+                           'exchange. This can lead to long start times')
+    try:
+        pd_timedelta = pandas.Timedelta(
+            Exchange.parse_timeframe(args.timedelta), unit='s')
+    except (NotSupported, ValueError):
+        raise ValueError('Timedelta is not valid')
+    auth_aliases = {}
+    if args.live:
+        if args.start_date != '':
+            raise ValueError('Start date cannot be set in live mode')
+        if args.start_balances != '{}':
+            raise ValueError('Start balance cannot be set in live mode')
+        pd_start_date = pandas.Timestamp.now(tz='UTC').floor(pd_timedelta)
+        start_balances = None
+        auth_aliases = json.loads(args.auth_aliases)
+    else:
+        pd_start_date = pandas.to_datetime(args.start_date, utc=True)
+        start_balances = json.loads(args.start_balances)
+    pd_end_date = pandas.to_datetime(args.end_date, utc=True)
+    if pandas.isnull(pd_start_date):
+        raise ValueError('Start date is not valid')
+    if pandas.isnull(pd_end_date):
+        raise ValueError('End date is not valid')
+
+    return execute_algorithm(exchange_names=exchange_names,
+                             symbols=symbols,
+                             pd_start_date=pd_start_date,
+                             pd_end_date=pd_end_date,
+                             pd_timedelta=pd_timedelta,
+                             conf_dir=args.config_directory,
+                             data_dir=args.data_directory,
+                             AlgorithmClass=AlgorithmClass,
+                             args=args,
+                             auth_aliases=auth_aliases,
+                             live=args.live,
+                             start_balances=start_balances)
