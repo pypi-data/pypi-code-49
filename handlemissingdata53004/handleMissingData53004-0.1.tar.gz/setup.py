@@ -1,0 +1,27 @@
+from setuptools import setup
+setup(name='handleMissingData53004',
+version='0.1',
+description='A package for handling missing data in a CSV File',
+url='',
+download_url='',
+author='Ashutosh Rattan',
+author_email='ashutosh544@gmail.com',
+license='MIT',
+packages=['handleMissingData53004'],
+zip_safe=False,
+install_requires = [
+        'sys',
+        'pandas',
+        'sklearn',
+        'numpy'],
+classifiers=[
+    'Development Status :: 3 - Alpha',      
+    'Intended Audience :: Developers',      
+    'Topic :: Software Development :: Build Tools',
+    'License :: OSI Approved :: MIT License',   
+    'Programming Language :: Python :: 3',      
+    'Programming Language :: Python :: 3.4',
+    'Programming Language :: Python :: 3.5',
+    'Programming Language :: Python :: 3.6',
+  ],
+)
