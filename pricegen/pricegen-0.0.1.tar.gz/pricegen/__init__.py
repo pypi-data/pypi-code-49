@@ -1,0 +1,1 @@
+from pricegen.generator import *
