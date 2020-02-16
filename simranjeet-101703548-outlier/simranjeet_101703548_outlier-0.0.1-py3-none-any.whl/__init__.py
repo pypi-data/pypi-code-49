@@ -1,0 +1,1 @@
+from simar_101703543_outlier.outlier import outlier_row_removal
