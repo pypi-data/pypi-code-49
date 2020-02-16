@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Copyright © 2019 Michael J. Hayford
+""" mpl implementations of common optical analyses
+
+.. codeauthor: Michael J. Hayford
+"""
+
+import abc
+
+import numpy as np
+
+from rayoptics.mpl.axisarrayfigure import Fit
+from rayoptics.mpl.styledfigure import StyledFigure
+
+from rayoptics.optical.opticalspec import Field
+from rayoptics.optical.trace import trace_astigmatism
+from rayoptics.optical.thirdorder import compute_third_order
+
+
+class FieldCurveFigure(StyledFigure):
+    """ Plot of astigmatism curves """
+
+    def __init__(self, opt_model,
+                 eval_fct=trace_astigmatism,
+                 **kwargs):
+        self.opt_model = opt_model
+        self.scale_type = Fit.All
+        self.eval_fct = eval_fct
+
+        super().__init__(**kwargs)
+
+        self.update_data()
+
+    def refresh(self):
+        self.update_data()
+        self.plot()
+
+    def update_data(self):
+        self.s_data = []
+        self.t_data = []
+        self.field_data = []
+
+        osp = self.opt_model.optical_spec
+        _, wvl, foc = osp.lookup_fld_wvl_focus(0)
+        fld = Field()
+        max_field = osp.field_of_view.max_field()[0]
+        for f in np.linspace(0., max_field, num=11):
+            fld.y = f
+            s_foc, t_foc = self.eval_fct(self.opt_model, fld, wvl, foc)
+            self.s_data.append(s_foc)
+            self.t_data.append(t_foc)
+            self.field_data.append(f)
+        return self
+
+    def plot(self):
+        self.clf()
+        self.ax = self.add_subplot(1, 1, 1)
+
+        self.ax.set_title("Astigmatic Field Plot", pad=10.0, fontsize=18)
+
+        self.ax.plot(self.s_data, self.field_data,
+                     label='sagittal',
+                     c=self._rgb['violet'])
+        self.ax.plot(self.t_data, self.field_data,
+                     label='tangential',
+                     c=self._rgb['magenta'])
+        self.ax.set_xlabel('focus')
+        self.ax.set_ylabel('field height')
+
+        self.ax.legend()
+
+        self.canvas.draw()
+
+        return self
+
+
+class ThirdOrderBarChart(StyledFigure):
+    def __init__(self, opt_model,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.opt_model = opt_model
+        self.scale_type = Fit.All
+
+        self.update_data()
+
+    def refresh(self):
+        self.update_data()
+        self.plot()
+
+    def update_data(self):
+        self.to_pkg = compute_third_order(self.opt_model)
+
+    def plot(self):
+        self.clf()
+        self.ax = self.add_subplot(1, 1, 1)
+
+        self.ax.set_xlabel('Surface')
+        self.ax.set_ylabel('third order aberration')
+        self.ax.set_title('Surface by surface third order aberrations')
+        self.to_pkg.plot.bar(ax=self.ax, rot=0)
+        self.ax.grid(True)
+        self.tight_layout()
+
+        self.canvas.draw()
+
+        return self
+
+
+# experimental - something usable from qt and jupyter
+class AnalysisPlot(abc.ABC):
+    """ abstract api for matplotlib axes customized for specific analyses """
+
+    def __init__(self, opt_model):
+        self.opt_model = opt_model
+
+    def refresh(self):
+        """ called by the app manager to refresh the plot """
+        self.update_data()
+        self.plot()
+
+    @abc.abstractmethod
+    def update_data(self):
+        """ function to update the backend data needed for the plot """
+
+    @abc.abstractmethod
+    def plot(self):
+        """ function that executes the plotting commands """
+
+
+class AstigmatismCurvePlot(AnalysisPlot):
+    def __init__(self, opt_model, eval_fct=trace_astigmatism, **kwargs):
+        super().__init__(opt_model)
+        self.scale_type = Fit.All
+        self.eval_fct = eval_fct
+
+        self.update_data()
+
+    def update_data(self):
+        self.s_data = []
+        self.t_data = []
+        self.field_data = []
+
+        osp = self.opt_model.optical_spec
+        _, wvl, foc = osp.lookup_fld_wvl_focus(0)
+        fld = Field()
+        max_field = osp.field_of_view.max_field()[0]
+        for f in np.linspace(0., max_field, num=11):
+            fld.y = f
+            s_foc, t_foc = self.eval_fct(self.opt_model, fld, wvl, foc)
+            self.s_data.append(s_foc)
+            self.t_data.append(t_foc)
+            self.field_data.append(f)
+
+    def plot(self):
+        self.ax.cla()
+
+        self.ax.set_title("Astigmatic Field Plot", pad=10.0, fontsize=18)
+
+        self.ax.plot(self.s_data, self.field_data, label='sagittal')
+        self.ax.plot(self.t_data, self.field_data, label='tangential')
+        self.ax.set_xlabel('focus')
+        self.ax.set_ylabel('field height')
+
+        self.ax.legend()
+
+#        fig.canvas.draw()
