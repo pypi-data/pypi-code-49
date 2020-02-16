@@ -1,0 +1,91 @@
+# tifffile/setup.py
+
+"""Tifffile package setuptools script."""
+
+import sys
+import re
+
+from setuptools import setup
+
+buildnumber = ''
+
+with open('tifffile/tifffile.py') as fh:
+    code = fh.read()
+
+version = re.search(r"__version__ = '(.*?)'", code).groups()[0]
+version += ('.' + buildnumber) if buildnumber else ''
+
+description = re.search(r'"""(.*)\.(?:\r\n|\r|\n)', code).groups()[0]
+
+readme = re.search(r'(?:\r\n|\r|\n){2}"""(.*)"""(?:\r\n|\r|\n){2}__version__',
+                   code, re.MULTILINE | re.DOTALL).groups()[0]
+
+readme = '\n'.join([description, '=' * len(description)] +
+                   readme.splitlines()[1:])
+
+if 'sdist' in sys.argv:
+    # update README, LICENSE, and CHANGES files
+
+    with open('README.rst', 'w') as fh:
+        fh.write(readme)
+
+    license = re.search(r'(# Copyright.*?(?:\r\n|\r|\n))(?:\r\n|\r|\n)+""',
+                        code, re.MULTILINE | re.DOTALL).groups()[0]
+
+    license = license.replace('# ', '').replace('#', '')
+
+    with open('LICENSE', 'w') as fh:
+        fh.write('BSD 3-Clause License\n\n')
+        fh.write(license)
+
+    revisions = re.search(r'(?:\r\n|\r|\n){2}(Revisions.*)   \.\.\.', readme,
+                          re.MULTILINE | re.DOTALL).groups()[0].strip()
+
+    with open('CHANGES.rst', 'r') as fh:
+        old = fh.read()
+
+    d = revisions.splitlines()[-1]
+    old = old.split(d)[-1]
+    with open('CHANGES.rst', 'w') as fh:
+        fh.write(revisions.strip())
+        fh.write(old)
+
+setup(
+    name='tifffile',
+    version=version,
+    description=description,
+    long_description=readme,
+    author='Christoph Gohlke',
+    author_email='cgohlke@uci.edu',
+    url='https://www.lfd.uci.edu/~gohlke/',
+    license='BSD',
+    packages=['tifffile'],
+    python_requires='>=3.6',
+    install_requires=[
+        'numpy>=1.15.1',
+        'imagecodecs>=2020.1.31',
+    ],
+    extras_require={
+        'all': ['matplotlib>=3.1'],
+    },
+    tests_require=[
+        'pytest', 'czifile', 'cmapfile', 'oiffile', 'lfdfiles', 'roifile'
+        ],
+    entry_points={
+        'console_scripts': [
+            'tifffile = tifffile:main',
+            'lsm2bin = tifffile.lsm2bin:main',
+        ]},
+    platforms=['any'],
+    classifiers=[
+        'Development Status :: 4 - Beta',
+        'License :: OSI Approved :: BSD License',
+        'Intended Audience :: Science/Research',
+        'Intended Audience :: Developers',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python :: 3 :: Only',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+    ],
+)
