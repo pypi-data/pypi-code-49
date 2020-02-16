@@ -1,0 +1,1 @@
+from simar_co6_101703543.topsis import topsis
