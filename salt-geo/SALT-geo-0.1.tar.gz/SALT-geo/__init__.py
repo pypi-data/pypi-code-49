@@ -1,0 +1,1 @@
+#! /usr/bin/env python"""Sals Awesome and Lovable Toolbox provides common functions used in other tools I have written"""__author__ = "Salvatore G. Candela"__version__ = '0.1'
