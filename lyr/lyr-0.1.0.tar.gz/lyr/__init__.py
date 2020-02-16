@@ -1,0 +1,1 @@
+from lyr.lyrics import lyrics
