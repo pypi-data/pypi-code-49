@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+# Copyright (C) 2018  David Arroyo Menéndez
+
+# Author: David Arroyo Menéndez <davidam@gnu.org>
+# Maintainer: David Arroyo Menéndez <davidam@gnu.org>
+
+# This file is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3, or (at your option)
+# any later version.
+
+# This file is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with Damegender; see the file LICENSE.  If not, write to
+# the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA,
+
+from app.dame_gender import Gender
+from app.dame_sexmachine import DameSexmachine
+import sys
+import os
+import re
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("name", help="display the gender")
+parser.add_argument('--ml', choices=['nltk', 'svc', 'sgd', 'gaussianNB', 'multinomialNB', 'bernoulliNB', 'forest', 'tree', 'mlp'])
+parser.add_argument('--total', default="ine", choices=['ine', 'uy', 'uk', 'us', 'luciahelena', 'genderguesser'])
+parser.add_argument('--version', action='version', version='0.1')
+args = parser.parse_args()
+
+results = []
+if (args.total == "genderguesser"):
+        name = args.name.capitalize()
+        cmd = 'grep -i "' + name + '" files/names/nam_dict.txt > files/logs/grep.tmp'
+#        print(cmd)
+        os.system(cmd)
+        for i in open('files/logs/grep.tmp', 'r').readlines():
+                results.append(i)
+        male = 0
+        female = 0
+        for i in results:
+                regex = "(M|F|=|\?|1)( |M|F)?( )(" + name + ")"
+                r = re.match(regex, i)
+                if (r is not None):
+                        prob = r.group(1) + r.group(2)
+                else:
+                        prob = ""
+                if (('F' == prob) or ('F ' == prob) or (prob == '?F') or (prob == '1F')):
+                        female = female + 1
+                elif (('M' == prob) or ('M ' == prob) or ('?M' == prob) or ('1M' == prob)):
+                        male = male + 1
+        if ( female > male ):
+                print("gender: female")
+        if ( male > female ):
+                print("gender: male")
+        elif ( male == female ):
+                print("gender: unknown")
+                print("you can try predict with --ml")
+elif (args.total == "luciahelena"):
+        g = Gender()
+        males = g.csv2names(path="files/names/allnoundefined.males.csv")
+        females = g.csv2names(path="files/names/allnoundefined.females.csv")
+        print("%s was classified as: " % args.name)
+        if (args.name in males):
+                print("male")
+        elif (args.name in females):
+                print("female")
+        else:
+                print("this name was not classified as male or female")
+else:
+    s = DameSexmachine()
+    num_males = s.name_frec(args.name, dataset=args.total)['males']
+    num_females = s.name_frec(args.name, dataset=args.total)['females']
+    if (int(num_males) > int(num_females)):
+        print("%s's gender is male" % (str(args.name)))
+        prob = int(num_males) / (int(num_males) + int(num_females))
+        print("probability: %s" % str(prob))
+    elif (int(num_males) < int(num_females)):
+        print("%s's gender is female" % (str(args.name)))
+        prob = int(num_females) / (int(num_females) + int(num_males))
+        print("probability: %s" % str(prob))
+    elif ((int(num_males) == 0) and (int(num_females) == 0)):
+        args.ml = 'nltk'
+
+    if (args.ml):
+        if (args.ml == "nltk"):
+            guess = s.guess(args.name, binary=True, ml="nltk")
+        if (args.ml == "sgd"):
+            guess = s.guess(args.name, binary=True, ml="sgd")
+        elif (args.ml == "svc"):
+            guess = s.guess(args.name, binary=True, ml="svc")
+        elif (args.ml == "gaussianNB"):
+            guess = s.guess(args.name, binary=True, ml="gaussianNB")
+        elif (args.ml == "multinomialNB"):
+            guess = s.guess(args.name, binary=True, ml="multinomialNB")
+        elif (args.ml == "bernoulliNB"):
+            guess = s.guess(args.name, binary=True, ml="bernoulliNB")
+        elif (args.ml == "forest"):
+            guess = s.guess(args.name, binary=True, ml="forest")
+        elif (args.ml == "xgboost"):
+            guess = s.guess(args.name, binary=True, ml="xgboost")
+        elif (args.ml == "tree"):
+            guess = s.guess(args.name, binary=True, ml="tree")
+        elif (args.ml == "mlp"):
+            guess = s.guess(args.name, binary=True, ml="mlp")
+        if (guess == 1):
+            sex = "male"
+        elif (guess == 0):
+            sex = "female"
+        elif (guess == 2):
+            sex = "unknown"
+        print("%s gender predicted is %s" % (str(args.name), sex))
+
+    if (args.total == "ine"):
+        print("%s males for %s from INE.es" % (num_males, args.name))
+        print("%s females for %s from INE.es" % (num_females, args.name))
+    elif (args.total == "uy"):
+        print("%s males for %s from Uruguay census" % (num_males, args.name))
+        print("%s females for %s from Uruguay census" % (num_females, args.name))
+    elif (args.total == "uk"):
+        print("%s males for %s from United Kingdom census" % (num_males, args.name))
+        print("%s females for %s from United Kingdom census" % (num_females, args.name))
+    elif (args.total == "us"):
+        print("%s males for %s from United States of America census" % (num_males, args.name))
+        print("%s females for %s from United States of America census" % (num_females, args.name))
