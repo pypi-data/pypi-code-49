@@ -1,0 +1,868 @@
+# pyre-strict
+"""
+Workflow runner building blocks & local driver
+
+--------
+Overview
+--------
+
+Workflow execution proceeds according to the AST's ``WorkflowNode`` graph, in which each Decl,
+Call, Scatter, Conditional, and (implicit) Gather operation has its own node which advertises its
+dependencies on the other nodes.
+
+Abstractly, we plan to "visit" each node after visiting all of its dependencies. The node's type
+prescribes some job to do upon visitation, such as evaluating a Decl's WDL expression, running a
+task on some inputs, or scheduling additional jobs to scatter over an array. Named WDL values
+(``WDL.Env.Bindings[WDL.Value.Base]``) are transmitted along each dependency edge, and WDL
+expressions in each node are evaluated in the environment formed from the union of the node's
+incoming dependency edges.
+
+Scatter sections contain a body, which provides a template for the job subgraph to be scheduled for
+each element of the runtime-evaluated scatter array. They also contain template Gather nodes, each
+dependent on a body subgraph node. Once all the body subgraph jobs have been scheduled, the Gather
+jobs can be scheduled as well, with their dependencies multiplexed to the corresponding subgraph
+jobs. Nodes outside of the scatter section depend on the Gather nodes rather than reaching into the
+body subgraph directly.
+
+Conditional sections are treated similarly, but only zero or one instance of its body subgraph will
+be launched. Scatter and Conditional sections may be nested, inducing a multi-level tree of Gather
+operations.
+"""
+
+import logging
+import multiprocessing
+import os
+import math
+import itertools
+import json
+import signal
+import traceback
+import pickle
+import threading
+import copy
+from concurrent import futures
+from typing import Optional, List, Set, Tuple, NamedTuple, Dict, Union, Iterable, Callable, Any
+import importlib_metadata
+from .. import Env, Type, Value, Tree, StdLib
+from ..Error import InputError
+from .task import run_local_task, _filenames, link_outputs
+from .download import able as downloadable, run as download
+from .._util import (
+    write_values_json,
+    provision_run_dir,
+    LOGGING_FORMAT,
+    TerminationSignalFlag,
+    LoggingFileHandler,
+)
+from .._util import StructuredLogMessage as _
+from .error import RunFailed, Terminated
+
+
+class WorkflowOutputs(Tree.WorkflowNode):
+    """
+    A no-op workflow node which depends on each ``Decl`` node from the workflow output section. Or,
+    if the workflow is missing the output section, depends on ``Call`` and ``Gather`` nodes for all
+    call outputs.
+
+    The workflow state machine tacks this on to the workflow graph to facilitate assembly of the
+    outputs environment.
+    """
+
+    output_node_ids: Set[str]
+
+    def __init__(self, workflow: Tree.Workflow) -> None:
+        super().__init__("outputs", workflow.pos)
+
+        self.output_node_ids = set()
+        if workflow.outputs is not None:
+            for node in workflow.outputs:
+                self.output_node_ids.add(node.workflow_node_id)
+        else:
+            # no output{} section -- use all top-level Calls and any top-level Gather whose
+            # ultimate referee is a Call
+            for n in workflow.body:
+                if isinstance(n, Tree.Call):
+                    self.output_node_ids.add(n.workflow_node_id)
+                if isinstance(n, Tree.WorkflowSection):
+                    for g in n.gathers.values():
+                        if isinstance(g.final_referee, Tree.Call):
+                            self.output_node_ids.add(g.workflow_node_id)
+
+    def _workflow_node_dependencies(self) -> Iterable[str]:
+        yield from self.output_node_ids
+
+    def add_to_type_env(
+        self, struct_typedefs: Env.Bindings[Tree.StructTypeDef], type_env: Env.Bindings[Type.Base]
+    ) -> Env.Bindings[Type.Base]:
+        raise NotImplementedError()
+
+    @property
+    def children(self) -> Iterable[Tree.SourceNode]:
+        return []
+
+
+_Job = NamedTuple(
+    "_Job",
+    [
+        ("id", str),
+        ("node", Tree.WorkflowNode),
+        ("dependencies", Set[str]),
+        ("scatter_stack", List[Tuple[str, Env.Binding[Value.Base]]]),
+    ],
+)
+
+
+class StateMachine:
+    """
+    On-line workflow state machine, suitable for use within a singleton driver process managing
+    in-memory state. The state machine evaluates WDL expressions locally, while instructing the
+    driver when to call tasks/subworkflows. It's agnostic to how/where the driver actually executes
+    each call, just requiring asynchronous notification of call completion along with the outputs.
+    """
+
+    _logger: Optional[logging.Logger] = None
+    logger_id: str
+    run_dir: str
+    values_to_json: Callable[[Env.Bindings[Value.Base]], Dict]
+    workflow: Tree.Workflow
+    inputs: Env.Bindings[Value.Base]
+    jobs: Dict[str, _Job]
+    job_outputs: Dict[str, Env.Bindings[Value.Base]]
+    finished: Set[str]
+    running: Set[str]
+    waiting: Set[str]
+    filename_whitelist: Set[str]
+    # TODO: factor out WorkflowState interface?
+
+    def __init__(
+        self,
+        logger_id: str,
+        run_dir: str,
+        workflow: Tree.Workflow,
+        inputs: Env.Bindings[Value.Base],
+    ) -> None:
+        """
+        Initialize the workflow state machine from the workflow AST and inputs
+        """
+        self.logger_id = logger_id
+        self.run_dir = run_dir
+        self.workflow = workflow
+        self.inputs = inputs
+        self.jobs = {}
+        self.job_outputs = {}
+        self.finished = set()
+        self.running = set()
+        self.waiting = set()
+        self.filename_whitelist = _filenames(inputs)
+
+        from .. import values_to_json
+
+        self.values_to_json = values_to_json  # pyre-ignore
+
+        workflow_nodes = (workflow.inputs or []) + workflow.body + (workflow.outputs or [])
+        workflow_nodes.append(WorkflowOutputs(workflow))
+
+        # TODO: by topsorting all section bodies we can ensure that when we schedule an additional
+        # job, all its dependencies will already have been scheduled, increasing
+        # flexibility/compatibility with various backends.
+        for node in workflow_nodes:
+            deps = node.workflow_node_dependencies
+            if isinstance(node, Tree.Decl):
+                # strike the dependencies of any decl node whose value is supplied in the inputs
+                if inputs.has_binding(node.name):
+                    deps = set()
+            self._schedule(
+                _Job(id=node.workflow_node_id, node=node, dependencies=deps, scatter_stack=[])
+            )
+
+        # sanity check
+        assert "outputs" in self.jobs
+        known_jobs = set(self.waiting)
+        for node in workflow_nodes:
+            if isinstance(node, Tree.WorkflowSection):
+                for gather in node.gathers.values():
+                    known_jobs.add(gather.workflow_node_id)
+        for job in self.jobs.values():
+            assert not (job.dependencies - known_jobs), (
+                job.id,
+                (job.dependencies - known_jobs),
+                known_jobs,
+            )
+
+        self._log_status()
+
+    @property
+    def outputs(self) -> Optional[Env.Bindings[Value.Base]]:
+        """
+        Workflow outputs, once the workflow is completely finished. ``None`` until then.
+
+        Warning: be sure to distinguish ``None``, the workflow isn't finished, from ``[]``, the
+        workflow finished with no outputs.
+        """
+        if len(self.finished) < len(self.jobs):
+            return None
+        ans = self.job_outputs["outputs"]
+        assert ans is not None
+        return ans
+
+    CallInstructions = NamedTuple(
+        "CallInstructions",
+        [
+            ("id", str),
+            ("callee", Union[Tree.Task, Tree.Workflow]),
+            ("inputs", Env.Bindings[Value.Base]),
+        ],
+    )
+    """
+    The state machine produces a ``CallInstructions`` object when it's time for the driver to
+    launch a task/subworkflow job.
+
+    :param id: call/job ID string, unique in the workflow
+    :param callee: ``WDL.Call`` or ``WDL.Workflow`` to launch
+    :param inputs: ``WDL.Env.Bindings[Value.Base]`` of call inputs
+    """
+
+    def step(self) -> "Optional[StateMachine.CallInstructions]":
+        """
+        Advance the workflow state machine, returning the next call to initiate.
+
+        The driver must start the specified callee task/workflow and then, later upon its
+        completion, invoke ``call_finished()`` with its outputs. It is NOT necessary to await the
+        call's completion before another ``step()`` for the next call; this allows the driver
+        to orchestrate multiple calls at once. Indeed, the driver should launch as many calls as
+        it can support concurrently, by calling ``step()`` in a loop until getting back ``None``;
+        doing so after initialization and after each ``call_finished()`` invocation, until at last
+        the workflow outputs are available.
+        """
+        runnable = []
+        while True:
+            # select a job whose dependencies are all finished
+            if not runnable:
+                runnable = sorted(
+                    [j for j in self.waiting if not (self.jobs[j].dependencies - self.finished)],
+                    reverse=True,
+                )
+            if not runnable:
+                assert self.running or not self.waiting, "deadlocked: " + str(
+                    set(itertools.chain(*(self.jobs[j].dependencies for j in self.waiting)))
+                    - self.finished
+                )
+                self._log_status()
+                return None
+            job_id = runnable.pop()
+            job = self.jobs[job_id]
+
+            # mark it 'running'
+            self.running.add(job.id)
+            self.waiting.remove(job.id)
+
+            # do the job
+            try:
+                res = self._do_job(job)
+            except Exception as exn:
+                setattr(exn, "job_id", job.id)
+                raise exn
+
+            # if it's a call, return instructions to the driver
+            if isinstance(res, StateMachine.CallInstructions):
+                return res
+
+            # otherwise, record the outputs, mark the job finished, and move on to the next job
+            envlog = self.values_to_json(res)
+            self.logger.info(
+                _(
+                    "visit",
+                    node=job.id,
+                    values=envlog if len(json.dumps(envlog)) < 4096 else "(((large)))",
+                )
+            )
+            self.job_outputs[job.id] = res
+            self.running.remove(job.id)
+            self.finished.add(job.id)
+
+    def call_finished(self, job_id: str, outputs: Env.Bindings[Value.Base]) -> None:
+        """
+        Deliver notice of a job's successful completion, along with its outputs
+        """
+        assert job_id in self.running
+        outlog = self.values_to_json(outputs)
+        self.logger.notice(_("finish", job=job_id))  # pyre-fixme
+        self.logger.info(
+            _(
+                "output",
+                job=job_id,
+                values=outlog if len(json.dumps(outlog)) < 4096 else "(((large)))",
+            )
+        )
+        call_node = self.jobs[job_id].node
+        assert isinstance(call_node, Tree.Call)
+        self.job_outputs[job_id] = outputs.wrap_namespace(call_node.name)
+        self.filename_whitelist |= _filenames(outputs)
+        self.finished.add(job_id)
+        self.running.remove(job_id)
+
+    def _schedule(self, job: _Job) -> None:
+        self.logger.debug(_("schedule", node=job.id, dependencies=list(job.dependencies)))
+        assert job.id not in self.jobs
+        self.jobs[job.id] = job
+        self.waiting.add(job.id)
+
+    def _do_job(
+        self, job: _Job
+    ) -> "Union[StateMachine.CallInstructions, Env.Bindings[Value.Base]]":
+        if isinstance(job.node, Tree.Gather):
+            return _gather(
+                job.node, dict((dep_id, self.job_outputs[dep_id]) for dep_id in job.dependencies)
+            )
+
+        # for all non-Gather nodes, derive the environment by merging the outputs of all the
+        # dependencies (+ any current scatter variable bindings)
+        scatter_vars = Env.Bindings()
+        for p in job.scatter_stack:
+            scatter_vars = Env.Bindings(p[1], scatter_vars)
+        # pyre-ignore
+        env = Env.merge(scatter_vars, *(self.job_outputs[dep] for dep in job.dependencies))
+        envlog = self.values_to_json(env)
+        self.logger.debug(
+            _(
+                "env",
+                node=job.id,
+                values=envlog if len(json.dumps(envlog)) < 4096 else "(((large)))",
+            )
+        )
+
+        stdlib = _StdLib(self)
+
+        if isinstance(job.node, (Tree.Scatter, Tree.Conditional)):
+            for newjob in _scatter(self.workflow, job.node, env, job.scatter_stack, stdlib):
+                self._schedule(newjob)
+            # the section node itself has no outputs, so return an empty env
+            return Env.Bindings()
+
+        if isinstance(job.node, Tree.Decl):
+            # bind the value obtained either (i) from the workflow inputs or (ii) by evaluating
+            # the expr
+            v = None
+            try:
+                v = self.inputs.resolve(job.node.name)
+            except KeyError:
+                pass
+            if v is None:
+                if job.node.expr:
+                    v = job.node.expr.eval(env, stdlib=stdlib).coerce(job.node.type)
+                else:
+                    assert job.node.type.optional
+                    v = Value.Null()
+            return Env.Bindings(Env.Binding(job.node.name, v))
+
+        if isinstance(job.node, WorkflowOutputs):
+            return env
+
+        if isinstance(job.node, Tree.Call):
+            # evaluate input expressions
+            call_inputs = Env.Bindings()
+            for name, expr in job.node.inputs.items():
+                call_inputs = call_inputs.bind(name, expr.eval(env, stdlib=stdlib))
+            # check workflow inputs for additional inputs supplied to this call
+            for b in self.inputs.enter_namespace(job.node.name):
+                call_inputs = call_inputs.bind(b.name, b.value)
+            # coerce inputs to required types
+            assert isinstance(job.node.callee, (Tree.Task, Tree.Workflow))
+            callee_inputs = job.node.callee.available_inputs
+            call_inputs = call_inputs.map(
+                lambda b: Env.Binding(b.name, b.value.coerce(callee_inputs[b.name].type))
+            )
+            # check input files against whitelist
+            disallowed_filenames = _filenames(call_inputs) - self.filename_whitelist
+            disallowed_filenames = set(fn for fn in disallowed_filenames if not downloadable(fn))
+            if disallowed_filenames:
+                raise InputError(
+                    f"call {job.node.name} inputs use unknown file: {next(iter(disallowed_filenames))}"
+                )
+            # issue CallInstructions
+            self.logger.notice(_("issue", job=job.id, callee=job.node.callee.name))  # pyre-fixme
+            inplog = self.values_to_json(call_inputs)
+            self.logger.info(
+                _(
+                    "input",
+                    job=job.id,
+                    values=inplog if len(json.dumps(inplog)) < 4096 else "(((large)))",
+                )
+            )
+
+            return StateMachine.CallInstructions(
+                id=job.id, callee=job.node.callee, inputs=call_inputs
+            )
+
+        raise NotImplementedError()
+
+    @property
+    def logger(self) -> logging.Logger:
+        if not self._logger:
+            self._logger = logging.getLogger(self.logger_id)
+            # TODO: if we were truly unpickling in a new process, we'd need to reinitialize the
+            # logger object like this --
+            #
+            # if self.run_dir and not self._logger.hasHandlers():
+            #    fh = logging.FileHandler(os.path.join(self.run_dir, "workflow.log"))
+            #    fh.setFormatter(logging.Formatter(LOGGING_FORMAT))
+            #    self._logger.addHandler(fh)
+            #
+            # and close it later
+        return self._logger
+
+    def _log_status(self) -> None:
+        self.logger.notice(  # pyre-fixme
+            _(
+                "workflow steps",
+                waiting=len(self.waiting),
+                outstanding=len(self.running),
+                finished=len(self.finished),
+            )
+        )
+
+    def __getstate__(self) -> Dict[str, Any]:
+        ans = dict(self.__dict__)
+        del ans["_logger"]  # for Python pre-3.7 loggers: https://bugs.python.org/issue30520
+        return ans
+
+
+def _scatter(
+    workflow: Tree.Workflow,
+    section: Union[Tree.Scatter, Tree.Conditional],
+    env: Env.Bindings[Value.Base],
+    scatter_stack: List[Tuple[str, Env.Binding[Value.Base]]],
+    stdlib: StdLib.Base,
+) -> Iterable[_Job]:
+    # we'll be tracking, for each body node ID, the IDs of the potentially multiple corresponding
+    # jobs scheduled
+    multiplex = {}
+    for body_node in section.body:
+        multiplex[body_node.workflow_node_id] = set()
+        if isinstance(body_node, Tree.WorkflowSection):
+            for subgather in body_node.gathers.values():
+                multiplex[subgather.workflow_node_id] = set()
+
+    # evaluate scatter array or boolean condition
+    v = section.expr.eval(env, stdlib=stdlib)
+    array = []
+    if isinstance(section, Tree.Scatter):
+        assert isinstance(v, Value.Array)
+        array = v.value
+    else:
+        assert isinstance(v, Value.Boolean)
+        if v.value:
+            # condition is satisfied, so we'll "scatter" over a length-1 array
+            array = [None]
+    digits = math.ceil(math.log10(len(array) + 1))
+
+    # for each array element, schedule an instance of the body subgraph
+    last_scatter_indices = None
+    for i, array_i in enumerate(array):
+
+        # scatter bookkeeping: format the index as a left-zero-padded string so that it'll sort
+        # lexicographically in the desired order; bind the scatter variable name to the array value
+        scatter_stack_i = scatter_stack
+        if isinstance(array_i, Value.Base):
+            assert isinstance(section, Tree.Scatter)
+            scatter_stack_i = scatter_stack_i + [
+                (str(i).zfill(digits), Env.Binding(section.variable, array_i))
+            ]
+        scatter_indices_i = [p[0] for p in scatter_stack_i]
+        assert last_scatter_indices is None or last_scatter_indices < scatter_indices_i
+        last_scatter_indices = scatter_indices_i
+
+        # schedule each body (template) node
+        for body_node in section.body:
+            # the job ID will be the template node ID with the current scatter index appended.
+            # if we're in nested scatters, then append *each* respective index!
+            assert len(scatter_indices_i) == body_node.scatter_depth
+            body_job_id = _append_scatter_indices(body_node.workflow_node_id, scatter_indices_i)
+
+            # furthermore, rewrite the template node's dependencies on other within-scatter nodes
+            # to the corresponding jobs given the current scatter index.
+            # especially tricky: in a nested scatter we can depend on a node at a higher level, for
+            # which we need to append only the indices up to its level!
+            dependencies = set()
+            for dep_id in body_node.workflow_node_dependencies:
+                dep = workflow.get_node(dep_id)
+                assert dep.scatter_depth <= body_node.scatter_depth
+                dependencies.add(
+                    _append_scatter_indices(dep_id, scatter_indices_i[: dep.scatter_depth])
+                )
+
+            yield _Job(
+                id=body_job_id,
+                node=body_node,
+                dependencies=dependencies,
+                scatter_stack=scatter_stack_i,
+            )
+
+            # record the newly scheduled job & its expected gathers in multiplex
+            multiplex[body_node.workflow_node_id].add(body_job_id)
+            if isinstance(body_node, Tree.WorkflowSection):
+                for subgather in body_node.gathers.values():
+                    multiplex[subgather.workflow_node_id].add(
+                        _append_scatter_indices(subgather.workflow_node_id, scatter_indices_i)
+                    )
+
+    # schedule each gather op with dependencies multiplexed onto the set of jobs scheduled
+    # from the corresponding body node.
+    # if the scatter array was empty or the condition was false, these dependencies are
+    # empty, so these jobs will become runnable immediately to "gather" empty arrays or
+    # Value.Null's as appropriate.
+    for body_node_id, gather in section.gathers.items():
+        yield _Job(
+            id=_append_scatter_indices(gather.workflow_node_id, [p[0] for p in scatter_stack]),
+            node=gather,
+            dependencies=multiplex[body_node_id],
+            scatter_stack=scatter_stack,
+        )
+
+
+def _append_scatter_indices(node_id: str, scatter_indices: List[str]) -> str:
+    return "-".join([node_id] + scatter_indices)
+
+
+def _gather(
+    gather: Tree.Gather, dependencies: Dict[str, Env.Bindings[Value.Base]]
+) -> Env.Bindings[Value.Base]:
+    # important: the dependency job IDs must sort lexicographically in the desired array order!
+    dep_ids = sorted(dependencies.keys())
+
+    # since it would be so awful to permute the array silently, lets verify the ID order
+    if isinstance(gather.section, Tree.Scatter):
+        dep_id_prefix = None
+        dep_id_values = []
+        for dep_id in dep_ids:
+            dep_id_fields = dep_id.split("-")
+            if dep_id_prefix is not None:
+                assert dep_id_fields[:-1] == dep_id_prefix
+            else:
+                dep_id_prefix = dep_id_fields[:-1]
+            dep_id_values.append(int(dep_id_fields[-1]))
+        assert dep_id_values == list(range(len(dep_ids)))
+
+    # figure out names of the values to gather, either the name if the referenced decl,
+    # or each output of the referenced call.
+    leaf = gather.final_referee  # follow potential linked list of Gathers for nested sections
+    if isinstance(leaf, Tree.Decl):
+        names = [leaf.name]
+    elif isinstance(leaf, Tree.Call):
+        names = []
+        outp = leaf.effective_outputs.enter_namespace(leaf.name)
+        assert len(outp) == len(leaf.effective_outputs)
+        for b in outp:
+            names.append(b.name)
+    else:
+        assert False
+
+    # for each such name,
+    ans = Env.Bindings()
+    ns = [leaf.name] if isinstance(leaf, Tree.Call) else []
+    for name in names:
+        # gather the corresponding values
+        values = [dependencies[dep_id].resolve(".".join(ns + [name])) for dep_id in dep_ids]
+        v0 = values[0] if values else None
+        assert v0 is None or isinstance(v0, Value.Base)
+        # bind the array, singleton value, or None as appropriate
+        if isinstance(gather.section, Tree.Scatter):
+            rhs = Value.Array((v0.type if v0 else Type.Any()), values)
+        else:
+            assert isinstance(gather.section, Tree.Conditional)
+            assert len(values) <= 1
+            rhs = v0 if v0 is not None else Value.Null()
+        ans = ans.bind(".".join(ns + [name]), rhs)
+
+    return ans
+
+
+class _StdLib(StdLib.Base):
+    "checks against & updates the filename whitelist for the read_* and write_* functions"
+    state: StateMachine
+
+    def __init__(self, state: StateMachine) -> None:
+        super().__init__(write_dir=os.path.join(state.run_dir, "write_"))
+        self.state = state
+
+    def _devirtualize_filename(self, filename: str) -> str:
+        if filename in self.state.filename_whitelist:
+            return filename
+        raise InputError("attempted read from unknown or inaccessible file " + filename)
+
+    def _virtualize_filename(self, filename: str) -> str:
+        self.state.filename_whitelist.add(filename)
+        return filename
+
+
+def run_local_workflow(
+    workflow: Tree.Workflow,
+    inputs: Env.Bindings[Value.Base],
+    run_id: Optional[str] = None,
+    run_dir: Optional[str] = None,
+    logger_prefix: Optional[List[str]] = None,
+    max_tasks: Optional[int] = None,
+    _thread_pools: Optional[Tuple[futures.ThreadPoolExecutor, futures.ThreadPoolExecutor]] = None,
+    _test_pickle: bool = False,
+    **task_args,  # pyre-ignore
+) -> Tuple[str, Env.Bindings[Value.Base]]:
+    """
+    Run a workflow locally.
+
+    Inputs shall have been typechecked already. File inputs are presumed to be local POSIX file
+    paths that can be mounted into a container.
+
+    :param run_id: unique ID for the run, defaults to workflow name
+    :param run_dir: directory under which to create a timestamp-named subdirectory for this run
+                    (defaults to current working directory).
+                    If the final path component is ".", then operate in run_dir directly.
+    """
+
+    # provision run directory and log file
+    run_id = run_id or workflow.name
+    run_dir = provision_run_dir(workflow.name, run_dir)
+    write_values_json(inputs, os.path.join(run_dir, "inputs.json"), namespace=workflow.name)
+
+    logger_prefix = logger_prefix or ["wdl"]
+    logger_id = logger_prefix + ["w:" + run_id]
+    logger = logging.getLogger(".".join(logger_id))
+    logfile = os.path.join(run_dir, "workflow.log")
+    with LoggingFileHandler(logger, logfile) as fh, TerminationSignalFlag(logger) as terminating:
+        fh.setFormatter(logging.Formatter(LOGGING_FORMAT))
+        if not _thread_pools:
+            try:
+                version = "v" + importlib_metadata.version("miniwdl")
+            except importlib_metadata.PackageNotFoundError:
+                version = "UNKNOWN"
+            logger.notice(_("miniwdl", version=version))  # pyre-fixme
+        logger.notice(  # pyre-fixme
+            _(
+                "workflow start",
+                name=workflow.name,
+                source=workflow.pos.uri,
+                line=workflow.pos.line,
+                column=workflow.pos.column,
+                dir=run_dir,
+            )
+        )
+        logger.info(_("thread", ident=threading.get_ident()))
+
+        # if we're the top-level workflow, provision thread pools
+        thread_pools = _thread_pools
+        if not thread_pools:
+            # Provision separate thread pools for tasks and sub-workflows. With just one pool, it'd
+            # be possible for all threads to be taken up by sub-workflows, deadlocking with no
+            # threads available to actually run their tasks.
+            # There's still a minor risk of deadlock if sub-workflow nesting is deeper than the
+            # subworkflow thread pool size.
+            thread_pools = (
+                futures.ThreadPoolExecutor(max_workers=(max_tasks or multiprocessing.cpu_count())),
+                futures.ThreadPoolExecutor(max_workers=16),
+            )
+        try:
+            # run workflow state machine
+            outputs = _workflow_main_loop(
+                workflow,
+                inputs,
+                run_id,
+                run_dir,
+                logger,
+                logger_id,
+                thread_pools,
+                terminating,
+                _test_pickle,
+                **task_args,
+            )
+        except:
+            if not _thread_pools:
+                # if we're the top-level worfklow, signal abort to anything still running
+                # concurrently on the thread pools (SIGUSR1 will be picked up by
+                # TerminationSignalFlag)
+                os.kill(os.getpid(), signal.SIGUSR1)
+            raise
+        finally:
+            if not _thread_pools:
+                # thread pools are "ours", so wind them down
+                for tp in thread_pools:
+                    tp.shutdown()
+
+    outputs = link_outputs(outputs, run_dir)
+    write_values_json(outputs, os.path.join(run_dir, "outputs.json"), namespace=workflow.name)
+
+    from .. import values_to_json
+
+    logger.notice("done")  # pyre-fixme
+    return (run_dir, outputs)
+
+
+def _workflow_main_loop(
+    workflow: Tree.Workflow,
+    inputs: Env.Bindings[Value.Base],
+    run_id: str,
+    run_dir: str,
+    logger: logging.Logger,
+    logger_id: List[str],
+    thread_pools: Optional[Tuple[futures.ThreadPoolExecutor, futures.ThreadPoolExecutor]],
+    terminating: Callable[[], bool],
+    _test_pickle: bool,
+    **task_args,
+) -> Env.Bindings[Value.Base]:
+    call_futures = {}
+    try:
+        # download input files, if needed
+        posix_inputs = _download_input_files(
+            logger, logger_id, run_dir, inputs, thread_pools[0], **task_args
+        )
+
+        # run workflow state machine to completion
+        state = StateMachine(".".join(logger_id), run_dir, workflow, posix_inputs)
+        while state.outputs is None:
+            if _test_pickle:
+                state = pickle.loads(pickle.dumps(state))
+            if terminating():
+                raise Terminated()
+            # schedule all runnable calls
+            next_call = state.step()
+            while next_call:
+                call_dir = os.path.join(run_dir, next_call.id)
+                if os.path.exists(call_dir):
+                    logger.warning(
+                        _("call subdirectory already exists, conflict likely", dir=call_dir)
+                    )
+                sub_args = (next_call.callee, next_call.inputs)
+                sub_kwargs = {
+                    "run_id": next_call.id,
+                    "run_dir": os.path.join(call_dir, "."),
+                    "logger_prefix": logger_id,
+                }
+                # submit to appropriate thread pool
+                if isinstance(next_call.callee, Tree.Task):
+                    future = thread_pools[0].submit(
+                        run_local_task, *sub_args, **sub_kwargs, **task_args
+                    )
+                elif isinstance(next_call.callee, Tree.Workflow):
+                    future = thread_pools[1].submit(
+                        run_local_workflow,
+                        *sub_args,
+                        **sub_kwargs,
+                        _thread_pools=thread_pools,
+                        **task_args,
+                    )
+                else:
+                    assert False
+                call_futures[future] = next_call.id
+                next_call = state.step()
+            # no more calls to launch right now; wait for an outstanding call to finish
+            future = next(futures.as_completed(call_futures), None)
+            if future:
+                __, outputs = future.result()
+                call_id = call_futures[future]
+                state.call_finished(call_id, outputs)
+                call_futures.pop(future)
+            else:
+                assert state.outputs is not None
+
+        return state.outputs
+    except Exception as exn:
+        logger.debug(traceback.format_exc())
+        wrapper = RunFailed(workflow, run_id, run_dir)
+        if isinstance(exn, RunFailed):
+            logger.error(_("run failure propagating", inner=getattr(exn, "run_id"), outer=run_id))
+        else:
+            info = {"error": exn.__class__.__name__}
+            if str(exn):
+                info["message"] = str(exn)
+            if hasattr(exn, "job_id"):
+                info["node"] = getattr(exn, "job_id")
+            logger.error(_(str(wrapper), **info))
+        # Cancel all future tasks that havent started
+        for key in call_futures:
+            key.cancel()
+        raise wrapper from exn
+
+
+def _download_input_files(
+    logger: logging.Logger,
+    logger_prefix: List[str],
+    run_dir: str,
+    inputs: Env.Bindings[Value.Base],
+    thread_pool: futures.ThreadPoolExecutor,
+    **task_args,  # pyre-ignore
+) -> Env.Bindings[Value.Base]:
+    """
+    Find all File values in the inputs (including any nested within compound values) that need
+    to / can be downloaded. Download them to some location under run_dir and return a copy of the
+    inputs with the URI values replaced by the downloaded filenames. Parallelize the download
+    operations on thread_pool.
+    """
+
+    # scan for URIs and schedule their downloads on the thread pool
+    ops = {}
+
+    def schedule_downloads(v: Value.Base) -> None:
+        nonlocal ops
+        if isinstance(v, Value.File):
+            if v.value not in ops and downloadable(v.value):
+                logger.info(_("schedule input file download", uri=v.value))
+                future = thread_pool.submit(
+                    download,
+                    v.value,
+                    run_dir=os.path.join(run_dir, "download", str(len(ops)), "."),
+                    logger_prefix=logger_prefix + [f"download{len(ops)}"],
+                    **task_args,
+                )
+                ops[future] = v.value
+        for ch in v.children:
+            schedule_downloads(ch)
+
+    inputs.map(lambda b: schedule_downloads(b.value))
+    if not ops:
+        return inputs
+    logger.notice(_("downloading input files", count=len(ops)))  # pyre-fixme
+
+    # collect the results, with "clean" fail-fast
+    outstanding = ops.keys()
+    downloaded = {}
+    total_bytes = 0
+    exn = None
+    while outstanding:
+        just_finished, still_outstanding = futures.wait(
+            outstanding, return_when=futures.FIRST_EXCEPTION
+        )
+        outstanding = still_outstanding
+        for future in just_finished:
+            try:
+                future_exn = future.exception()
+            except futures.CancelledError:
+                future_exn = Terminated()
+            if not future_exn:
+                uri = ops[future]
+                downloaded[uri] = future.result()
+                sz = os.path.getsize(downloaded[uri])
+                logger.info(_("downloaded input file", uri=uri, file=downloaded[uri], bytes=sz))
+                total_bytes += sz
+            elif not exn:
+                # cancel pending ops and signal running ones to abort
+                for outsfut in outstanding:
+                    outsfut.cancel()
+                os.kill(os.getpid(), signal.SIGUSR1)
+                exn = future_exn
+    if exn:
+        raise exn
+    logger.notice(  # pyre-fixme
+        _("downloaded input files", count=len(downloaded), total_bytes=total_bytes)
+    )
+
+    # rewrite the input URIs to the downloaded filenames
+    def rewrite_downloaded(v: Value.Base) -> Value.Base:
+        nonlocal downloaded
+        if isinstance(v, Value.File) and v.value in downloaded:
+            v.value = downloaded[v.value]
+            assert os.path.isfile(v.value)
+        for ch in v.children:
+            rewrite_downloaded(ch)
+        return v
+
+    return inputs.map(
+        lambda binding: Env.Binding(binding.name, rewrite_downloaded(copy.deepcopy(binding.value)))
+    )
