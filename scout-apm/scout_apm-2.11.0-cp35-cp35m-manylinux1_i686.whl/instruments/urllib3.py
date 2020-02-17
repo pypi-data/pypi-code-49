@@ -1,0 +1,65 @@
+# coding=utf-8
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import logging
+
+import wrapt
+
+from scout_apm.compat import text_type
+from scout_apm.core.tracked_request import TrackedRequest
+
+try:
+    from urllib3 import HTTPConnectionPool
+except ImportError:  # pragma: no cover
+    HTTPConnectionPool = None
+
+logger = logging.getLogger(__name__)
+
+have_patched_pool_urlopen = False
+
+
+def ensure_installed():
+    global have_patched_pool_urlopen
+
+    logger.info("Ensuring urllib3 instrumentation is installed.")
+
+    if HTTPConnectionPool is None:
+        logger.info("Unable to import urllib3.HTTPConnectionPool")
+        return False
+    elif not have_patched_pool_urlopen:
+        try:
+            HTTPConnectionPool.urlopen = wrapped_urlopen(HTTPConnectionPool.urlopen)
+        except Exception as exc:
+            logger.warning(
+                "Unable to instrument for Urllib3 HTTPConnectionPool.urlopen: %r",
+                exc,
+                exc_info=exc,
+            )
+        else:
+            have_patched_pool_urlopen = True
+
+
+@wrapt.decorator
+def wrapped_urlopen(wrapped, instance, args, kwargs):
+    def _extract_method(method, *args, **kwargs):
+        return method
+
+    try:
+        method = _extract_method(*args, **kwargs)
+    except TypeError:
+        method = "Unknown"
+
+    try:
+        url = text_type(instance._absolute_url("/"))
+    except Exception:
+        logger.exception("Could not get URL for HTTPConnectionPool")
+        url = "Unknown"
+
+    tracked_request = TrackedRequest.instance()
+    span = tracked_request.start_span(operation="HTTP/{}".format(method))
+    span.tag("url", text_type(url))
+
+    try:
+        return wrapped(*args, **kwargs)
+    finally:
+        tracked_request.stop_span()
