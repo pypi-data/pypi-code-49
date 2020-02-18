@@ -1,0 +1,7 @@
+default_url = "ws://localhost:8000/socketcluster/"
+control_channel = "control"
+channels_channel = "channels"
+clients_channel = "clients"
+scenarios_channel = "scenarios"
+entity_channel = "entity"
+position_channel = "position"
