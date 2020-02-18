@@ -1,0 +1,3 @@
+from tests.data_source_tests.collection_source import CollectionSourceTests
+from tests.data_source_tests.db_source import MongoDBSourceTests
+from tests.data_source_tests.file_source import FileSourceTests
