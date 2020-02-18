@@ -1,0 +1,1 @@
+from aryansindhi18_outlier.outlier_cmd import rem_out,err1
