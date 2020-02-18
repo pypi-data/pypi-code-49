@@ -1,0 +1,39 @@
+import os
+import dotenv
+import requests
+import json
+
+from .aws import Aws
+
+
+def dumps(to_dump):
+    def dump(obj):
+        return obj.__dict__
+
+    return json.dumps(to_dump, indent=4, default=dump, ensure_ascii=False)
+
+
+class AtomicCounter:
+    def __init__(self):
+        self.counter = 0
+
+    def count(self):
+        self.counter += 1
+        return self.counter
+
+
+def load_config_to_env(ref: str, config_url: str = 'http://127.0.0.1'):
+    az = Aws.get_az()
+
+    if not az:
+        try:
+            dotenv.load_dotenv()
+        except:
+            pass
+        return
+
+    ambient = 'prod' if az in ['2B', '2C', '2A'] else 'staging'
+    config: dict = requests.get(f"{config_url}/config/{ambient}/{az}/{ref}").json()
+
+    for key, value in config.items():
+        os.environ[key] = value
