@@ -1,0 +1,252 @@
+from concurrent.futures import ThreadPoolExecutor, Future
+from functools import partial
+
+from PySide2 import QtCore, QtWidgets
+from PySide2.QtCore import Signal
+
+import mincepy
+from . import common
+from . import models
+from . import tree_models
+
+__all__ = 'TypeDropDown', 'ConnectionWidget', 'MincepyWidget'
+
+
+class TypeDropDown(QtWidgets.QComboBox):
+    """Drop down combo box that lists the types available in archive"""
+    ALL = None
+
+    # Signals
+    selected_type_changed = Signal(object)
+
+    def __init__(self, query_model: models.DataRecordQueryModel, parent=None):
+        super().__init__(parent)
+        self._query_model = query_model
+        query_model.db_model.historian_changed.connect(self._update)
+
+        self.setEditable(True)
+        self._types = [None]
+        self.addItem(self.ALL)
+
+        def selection_changed(index):
+            restrict_type = self._types[index]
+            self.selected_type_changed.emit(restrict_type)
+
+        self.currentIndexChanged.connect(selection_changed)
+
+    @property
+    def _historian(self):
+        return self._query_model.db_model.historian
+
+    def _update(self):
+        self.clear()
+
+        results = self._historian.get_archive().find()
+        self._types = [None]
+        self._types.extend(list(set(result.type_id for result in results)))
+
+        type_names = self._get_type_names(self._types)
+
+        self.addItems(type_names)
+        completer = QtWidgets.QCompleter(type_names)
+        self.setCompleter(completer)
+
+    def _get_type_names(self, types):
+        type_names = []
+        for type_id in types:
+            try:
+                helper = self._historian.get_helper(type_id)
+            except TypeError:
+                type_names.append(str(type_id))
+            else:
+                type_names.append(mincepy.analysis.get_type_name(helper.TYPE))
+
+        return type_names
+
+
+class FilterControlPanel(QtWidgets.QWidget):
+    # Signals
+    display_as_class_changed = Signal(object)
+
+    def __init__(self, entries_table: models.EntriesTable, parent=None):
+        super().__init__(parent)
+        self._entries_table = entries_table
+
+        refresh = QtWidgets.QPushButton("Refresh")
+        refresh.clicked.connect(self._entries_table.refresh)
+
+        layout = QtWidgets.QHBoxLayout()
+        layout.addWidget(self._create_type_drop_down())
+        layout.addWidget(self._create_display_as_class_checkbox())
+        layout.addWidget(refresh)
+        self.setLayout(layout)
+
+    def _create_display_as_class_checkbox(self):
+        # Show snapshot class checkbox
+        display_class_checkbox = QtWidgets.QCheckBox('Display as class', self)
+        display_class_checkbox.setCheckState(QtCore.Qt.Checked)
+        display_class_checkbox.stateChanged.connect(
+            lambda state: self._entries_table.set_show_as_objects(state == QtCore.Qt.Checked))
+        self._entries_table.set_show_as_objects(display_class_checkbox.checkState() == QtCore.Qt.Checked)
+
+        return display_class_checkbox
+
+    def _create_type_drop_down(self):
+        type_drop_down = TypeDropDown(self._entries_table.query_model, self)
+        type_drop_down.selected_type_changed.connect(self._entries_table.query_model.set_type_restriction)
+
+        # Create an lay out the panel
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout()
+        layout.addWidget(QtWidgets.QLabel("Restrict type:"))
+        layout.addWidget(type_drop_down)
+        panel.setLayout(layout)
+
+        return panel
+
+
+class ConnectionWidget(QtWidgets.QWidget):
+    # Signals
+    connection_requested = Signal(str)
+    historian_created = Signal(mincepy.Historian)
+
+    def __init__(self,
+                 default_connect_uri='',
+                 create_historian_callback=common.default_create_historian,
+                 executor=common.default_executor,
+                 parent=None):
+        super().__init__(parent)
+        self._executor = executor
+        self._create_historian = create_historian_callback
+
+        self._connection_string = QtWidgets.QLineEdit(self)
+        self._connection_string.setText(default_connect_uri)
+        self._connect_button = QtWidgets.QPushButton('Connect', self)
+
+        layout = QtWidgets.QHBoxLayout()
+        layout.addWidget(self._connection_string)
+        layout.addWidget(self._connect_button)
+        self.setLayout(layout)
+
+        self._connect_button.clicked.connect(self._connect_pushed)
+
+    def _connect_pushed(self):
+        uri = self._connection_string.text()
+        self._executor(partial(self._connect, uri, ), "Connecting", blocking=True)
+
+    def _connect(self, uri):
+        try:
+            historian = self._create_historian(uri)
+        except Exception as exc:
+            err_msg = "Error creating historian with uri '{}':\n{}".format(uri, exc)
+            raise RuntimeError(err_msg)
+        else:
+            self.historian_created.emit(historian)
+
+        return "Connected to {}".format(uri)
+
+
+class MincepyWidget(QtWidgets.QWidget):
+
+    def __init__(self, default_connect_uri='', create_historian_callback=common.default_create_historian,
+                 executor=common.default_executor):
+        super().__init__()
+
+        self._create_historian_callback = create_historian_callback
+
+        # The model
+        self._db_model = models.DbModel()
+        self._data_records = models.DataRecordQueryModel(self._db_model, executor=executor, parent=self)
+
+        # Set up the connect panel of the GUI
+        connect_panel = ConnectionWidget(default_connect_uri,
+                                         create_historian_callback=create_historian_callback,
+                                         executor=executor,
+                                         parent=self)
+
+        connect_panel.historian_created.connect(self._historian_created)
+
+        self._entries_table = models.EntriesTable(self._data_records, parent=self)
+
+        control_panel = FilterControlPanel(self._entries_table, self)
+
+        self.layout = QtWidgets.QVBoxLayout()
+        self.layout.addWidget(connect_panel)
+        self.layout.addWidget(control_panel)
+        self.layout.addWidget(self._create_display_panel(self._entries_table))
+        self.setLayout(self.layout)
+
+    @property
+    def db_model(self):
+        return self._db_model
+
+    def _historian_created(self, historian):
+        self._db_model.historian = historian
+
+    def _create_display_panel(self, entries_table: models.EntriesTable):
+        panel = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+
+        entries_view = QtWidgets.QTableView(panel)
+        entries_view.setSortingEnabled(True)
+        entries_view.setModel(entries_table)
+
+        record_tree = tree_models.RecordTree(parent=panel)
+        record_tree_view = QtWidgets.QTreeView(panel)
+        record_tree_view.setModel(record_tree)
+
+        def row_changed(current, _previous):
+            entries_table = self._entries_table
+            record = entries_table.get_record(current.row())
+            snapshot = entries_table.get_snapshot(current.row())
+            record_tree.set_record(record, snapshot)
+
+        entries_view.selectionModel().currentRowChanged.connect(row_changed)
+
+        panel.addWidget(entries_view)
+        panel.addWidget(record_tree_view)
+
+        return panel
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self, default_connect_uri='', create_historian_callback=None):
+        super().__init__()
+        self._executor = ThreadPoolExecutor()
+        self._tasks = []
+
+        self._main_widget = MincepyWidget(default_connect_uri, create_historian_callback, self._execute)
+        self.setCentralWidget(self._main_widget)
+
+        self._create_status_bar()
+
+        self._task_done_signal.connect(self._task_done)
+
+    def _create_status_bar(self):
+        self.statusBar().showMessage('Ready')
+
+    def _execute(self, func, msg=None, blocking=False) -> Future:
+        future = self._executor.submit(func)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor if blocking else QtCore.Qt.BusyCursor)
+        self._tasks.append(future)
+        future.add_done_callback(self._task_done_signal.emit)
+        if msg is not None:
+            self.statusBar().showMessage(msg)
+
+        return future
+
+    _task_done_signal = Signal(Future)
+
+    @QtCore.Slot(Future)
+    def _task_done(self, future):
+        self._tasks.remove(future)
+        QtWidgets.QApplication.restoreOverrideCursor()
+
+        if not self._tasks:
+            self.statusBar().clearMessage()
+
+        try:
+            new_msg = future.result()
+            if new_msg is not None:
+                self.statusBar().showMessage(new_msg, 1000)
+        except Exception as exc:
+            QtWidgets.QErrorMessage(self).showMessage(str(exc))
