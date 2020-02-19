@@ -1,0 +1,2 @@
+from BigPythonPackage.BigPythonScript1 import ClassHello1
+from BigPythonPackage.BigPythonScript2 import ClassHello2
