@@ -1,0 +1,15 @@
+
+DEFAULT_POOL = 'none'
+DEADLINE_POOL_TYPE = 'deadline-pool'
+DEADLINE_GROUP_TYPE = 'deadline-group'
+QUBE_TYPE = 'qube'
+
+SECTION_COMMON = 'common'
+SECTION_DEADLINE_CONFIG = 'deadline_config'
+SECTION_QUBE_CONFIG = 'qube_config'
+
+
+HOST_STAT_UNKNOWN = 0
+HOST_STAT_RENDERING = 1
+HOST_STAT_IDLE = 2
+HOST_STAT_OFFLINE = 3
