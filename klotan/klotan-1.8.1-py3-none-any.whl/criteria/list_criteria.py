@@ -1,0 +1,1 @@
+from klotan.criteria.core import fn_to_criteria
