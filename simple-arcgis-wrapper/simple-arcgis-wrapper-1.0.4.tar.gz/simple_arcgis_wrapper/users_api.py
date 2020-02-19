@@ -1,0 +1,2 @@
+class UsersAPI(object):
+    pass
