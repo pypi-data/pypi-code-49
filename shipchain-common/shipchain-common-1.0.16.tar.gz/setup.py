@@ -1,0 +1,48 @@
+# -*- coding: utf-8 -*-
+from distutils.core import setup
+
+package_dir = \
+{'': 'src'}
+
+packages = \
+['shipchain_common',
+ 'shipchain_common.custom_logging',
+ 'shipchain_common.test_utils']
+
+package_data = \
+{'': ['*']}
+
+install_requires = \
+['aws-requests-auth>=0.4,<0.5',
+ 'boto3>=1.9,<1.10',
+ 'cryptography>=2.5,<2.6',
+ 'django-enumfields>=0.10.0,<0.11.0',
+ 'django-influxdb-tagged-metrics==1.3.3',
+ 'django>=2.2.7,<2.3.0',
+ 'djangorestframework-jsonapi>=3,<4',
+ 'djangorestframework>=3.10,<3.11',
+ 'drf-nested-routers>=0.91.0,<0.92.0',
+ 'python-dateutil>=2.7.5,<2.8.0',
+ 'requests>=2.21,<3.0']
+
+entry_points = \
+{'pytest11': ['json_asserter = shipchain_common.test_utils.json_asserter']}
+
+setup_kwargs = {
+    'name': 'shipchain-common',
+    'version': '1.0.16',
+    'description': "A PyPI package containing shared code for ShipChain's Python/Django projects.",
+    'long_description': '# Shipchain Common Python Library\n\nA PyPI package containing shared code for ShipChain\'s Python/Django projects\n\n\n## Pytest Fixtures\n\nWhen shipchain-common is installed, a pytest plugin named `json_asserter` is automatically registered.  This plugin is\n designed for writing concise pytest cases that make json_asserter about responses from a Django Rest Framework API. Most \n of the functionality is tailored to the `application/vnd.api+json` response type, but should still be usable for\n plain `application/json` responses.\n \n### json_asserter Fixture\n\nThe `json_asserter` fixture exposes several methods for testing specific HTTP Status codes as well as a class for\n building consistent entity references that must be found within the responses.\n \n#### Usage with application/vnd.api+json\n\nThis is the default when utilizing the `json_asserter`.  If the response does not conform to the \n[JSON Api standard](https://jsonapi.org/), the assertions will fail.\n \n##### Asserting Error Responses\n\nTo assert that a given response must have an error status, there are several 400-level response methods.  With the\n exception of the HTTP_400 method, each of these include the default error message for ease of use.\n \nThe following will assert that the response status was 403 and that the default error message ("You do not have\n permission to perform this action") is present.\n \n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_403(response)\n```\n \nIf a different error message should exist, or when checking the error of a 400 response, the specific error may\n be provided as an argument.\n \n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_400(response, error=\'Specific error message that should be in the respose\')\n```\n\n##### Asserting Successful Responses\n\nTo assert that a given response must have status 200, call the HTTP_200 method with only the Response object:\n\n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_200(response)\n```\n \nWhile this is valid, it is **very strongly** recommended to include additional details about the data present in the\n response. There are two ways to provide the data; however only one way can be used at a time in a given invocation.\n \n###### Simple Usage\n \nFor simple responses, the easiest way to specify required data in the responses is by directly specifying the\n Resource Type `resource`, the Resource Identifier `pk`, as well as any specific Attributes of the resource\n  `attributes`. \n  \n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_200(response, \n                    resource=\'User\', \n                    pk=\'4b56399d-3155-4fe5-ba4a-9718289a78b7\', \n                    attributes={\'username\': \'example_user\'})\n```\n\nThis will throw an assertion if the response is not for the resource type `User` with id \n`4b56399d-3155-4fe5-ba4a-9718289a78b7` and with _at least_ the attribute username `example_user`.  If the response\n includes _additional_ attributes that are not listed in the call to the json_asserter method, they are ignored.  The\n methods check partial objects and do not require that every attribute in the response must be defined in the\n assertion.\n   \nIt is also possible to assert only on the resource type and id without providing attributes.  This is useful if you\n are testing a response that generates content for the fields that may not be known prior to obtaining the response. \n Additionally, providing only the attributes and not the type and id will check only that an object in the response\n has those attributes, regardless of resource type or id.\n\n###### Advanced Usage\n \nFor responses where the associated Relationship and any extra Included resources are important, those can be included\n in the assertion.\n  \n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_200(response,\n                    entity_refs=json_asserter.EntityRef(\n                        resource=\'User\', \n                        pk=\'4b56399d-3155-4fe5-ba4a-9718289a78b7\', \n                        attributes={\'username\': \'example_user\'},\n                        relationships={\n                            \'manager\': json_asserter.EntityRef( \n                                resource=\'User\', \n                                pk=\'88e38305-9775-4b34-95d0-4e935bb7156c\')}),\n                    included=json_asserter.EntityRef(\n                        resource=\'User\', \n                        pk=\'88e38305-9775-4b34-95d0-4e935bb7156c\', \n                        attributes={\'username\': \'manager_user\'}))\n```\n\nThis requires the same original record in the response, but now also requires that there be _at least_ one relationship\n named `manager` with the associated User and that User must be present (with at least the one attribute) in the\n `included` property of the response.\n \nThe above example utilizes the `EntityRef` exposed via the `json_asserter` fixture.  This is a reference to a single\n entity defined by a combination of: ResourceType, ResourceID, Attributes, and Relationships. When providing the\n `entity_refs` argument to an assertion, you cannot provide any of the following arguments to the assertion directly:\n `resource`, `pk`, `attributes`, or `relationships`.\n \nWhen providing `included` json_asserter, you can provide either a single EntityRef or a list of EntityRef instances.  If\n a list is provided, _all_ referenced entities must be present in the `included` property of the response. As they do\n for the simple usage above, The same assertion rules apply here regarding providing a combination of `resource`, \n `pk`, and `attributes`.\n \nThe `entity_refs` parameter can be a list of EntityRef instances as well. However, this is only valid for List\n responses.  If a list of entity_refs is provided for a non-list response, an assertion will occur.  To assert that a\n response is a list, the parameter `is_list=True` must be provided. You can provide either a single EntityRef or a\n list of EntityRef instances.  If a list is provided, _all_ referenced entities must be present in the list of\n returned data.\n\n#### Usage with application/json\n\nSupport is included for making assertions on plain JSON responses with `json_asserter`. To ignore the JSON API specific \n assertions, you must provide the `vnd=False` parameter.  Only the `attributes` parameter is valid as there are no\n relationships or included properties in a plain json response.\n \nGiven this response:\n\n```json\n{\n    "id": "07b374c3-ed9b-4811-901a-d0c5d746f16a",\n    "name": "example 1",\n    "field_1": 1,\n    "owner": {\n        "username": "user1"\n    }\n}\n```\n\nAsserting the top level attributes as well as nested attributes is possible using the following call:\n\n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_200(response, \n                    vnd=False,\n                    attributes={\n                        \'id\': \'07b374c3-ed9b-4811-901a-d0c5d746f16a\',\n                        \'owner\': {\n                            \'username\': \'user1\'\n                        }\n                    })\n```\n\nFor a list response:\n\n```json\n[{\n    "username": "user1",\n    "is_active": False\n},\n{\n    "username": "user2",\n    "is_active": False\n},\n{\n    "username": "user3",\n    "is_active": False\n}]\n```\n\nIt is possible to assert that one or many sets of attributes exist in the response:\n```python\nresponse = api_client.get(self.detail_url)\njson_asserter.HTTP_200(response, \n                    vnd=False,\n                    is_list=True,\n                    attributes=[{\n                        "username": "user1",\n                        "is_active": False\n                    }, {\n                        "username": "user3",\n                        "is_active": False\n                    }])\n```\n\n#### Mixin Usage\n\nIf there is a class where every test may wish to use the `json_asserter`, than it may be easier to use to the `JsonAsserterMixin` found in `shipchain_common.test_utils`.\nThis will automatically add the `json_asserter` and set it as a class attribute before the tests are run.\nThis allows you to just call `self.json_asserter`, allowing for cleaner unit tests imports. \n',
+    'author': 'Adam Hodges',
+    'author_email': 'ahodges@shipchain.io',
+    'url': 'https://github.com/ShipChain/python-common',
+    'package_dir': package_dir,
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'entry_points': entry_points,
+    'python_requires': '>=3.6,<3.8',
+}
+
+
+setup(**setup_kwargs)
