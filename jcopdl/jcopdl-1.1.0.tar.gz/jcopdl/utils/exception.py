@@ -1,0 +1,2 @@
+class TruncationError(Exception):
+    pass
