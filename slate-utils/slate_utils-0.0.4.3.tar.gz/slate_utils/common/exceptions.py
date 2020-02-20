@@ -1,0 +1,2 @@
+class ConsolidatedRecordsError(Exception):
+    pass
