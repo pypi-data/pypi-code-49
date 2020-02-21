@@ -1,0 +1,29 @@
+import io
+# read the contents of your README file
+from os import path
+
+from setuptools import setup
+
+this_directory = path.abspath(path.dirname(__file__))
+with open(path.join(this_directory, "README.md"), encoding="utf-8") as f:
+    long_description = f.read()
+
+about = {}
+with io.open("striprtf/_version.py", "r", encoding="utf-8") as f:
+    exec(f.read(), about)
+
+setup(
+    name="striprtf",
+    packages=["striprtf"],
+    version=about["__version__"],
+    description="A simple library to convert rtf to text",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    author="Joshy Cyriac",
+    author_email="j.cyriac@gmail.com",
+    url="https://github.com/joshy/striprtf",
+    download_url="https://github.com/joshy/striprtf/archive/v%s.tar.gz" % about['__version__'],
+    keywords=["rtf"],
+    scripts=["striprtf/striprtf"],
+    classifiers=[],
+)
