@@ -1,0 +1,199 @@
+
+from PIL import Image, ImageFont, ImageDraw
+import cv2
+from saenews.sae2 import sae2
+import datetime
+from saenews.sae3 import *
+import os
+import saenews.sae3 as utils
+
+def get_path():
+    d = os.path.dirname(os.path.abspath(utils.__file__))
+    
+    return(d)
+
+
+
+def poster(input_file,title='',tag_line='', output_file=''):
+    repo_path = get_path()
+
+    if output_file == '':
+        output_file = str(datetime.datetime.now()) + '.png'
+    # Do not Remove # Class Initiation
+    # input_file = input_file # Name of Input  File
+    # file_name = input_file.split('.')[0]
+    H,W = cv2.imread(input_file,1).shape[:2] 
+    img = Image.open(input_file)
+    scale = (H/W)
+    WW = 1440
+    HH = round(WW*scale)
+    W,H = WW,HH
+    aa = img.resize((WW,HH)).save( '_resize.png')
+
+    ## For the Title
+    xy = (W//28,round(H/1.5))
+    text_font=repo_path + '/fonts/OTF/Akrobat-Black.otf'
+    font_size = W//25 # Font Size Enter Manually if required
+    caption_width = W//25  # Width of the caption. Reduce if the text is going outside the image
+
+    border_width = W//72 # Width of the Border
+    logo_border = (W//36,W//36) # How much away from the edge should the logo appear?? Have put (Width of Image)/40. But change if required.
+    font_title = ImageFont.truetype(text_font, size=font_size)
+    draw = ImageDraw.Draw(img)
+    w,h = draw.textsize(title, font=font_title)
+    ### Do not edit below unless you know the exact working of the functionsa
+
+    out = get_vignet_face('_resize.png',fxy='centre' )
+    out = put_caption(input_file=out, caption=title,caption_width=caption_width,font_size=font_size, xy = xy, text_font=text_font)
+
+    text_font=repo_path + '/fonts/PTS56F.ttf'
+    font_size = W//36 # Font Size Enter Manually if required
+    # xy_tagline = (xy[0], xy[1]+ font_size+10)
+    xy_tagline = (xy[0], xy[1]+h*2)
+    caption_width = W//18
+    out = put_caption(input_file=out, caption=tag_line,caption_width=caption_width,font_size=font_size, xy = xy_tagline, text_font=text_font)
+    out = add_border(width=border_width,color='red',input_file=out,  )
+    logo_font = repo_path + '/fonts/ChunkFive-Regular.otf'
+    out = put_logo(input_file=out,border=logo_border, output_file=output_file, text_font=logo_font)
+    return(out)
+
+
+
+def title_tagline_news(input_file,title='',tag_line='', output_file=''):
+    repo_path = get_path()
+
+    if output_file == '':
+        output_file = str(datetime.datetime.now()) + '.png'
+    a = sae2() # Do not Remove # Class Initiation
+    a.input_file = input_file # Name of Input  File
+    file_name = input_file.split('.')[0]
+    H,W = cv2.imread(a.input_file,1).shape[:2] 
+    img = Image.open(a.input_file)
+    scale = (H/W)
+    WW = 1440
+    HH = round(WW*scale)
+    W,H = WW,HH
+    aa = img.resize((WW,HH)).save( '_resize.png')
+
+    ## For the Title
+    xy = (W//28,round(H/1.5))
+    text_font=repo_path + '/fonts/OTF/Akrobat-Black.otf'
+    font_size = W//25 # Font Size Enter Manually if required
+    caption_width = W//25  # Width of the caption. Reduce if the text is going outside the image
+
+    border_width = W//72 # Width of the Border
+    logo_border = (W//36,W//36) # How much away from the edge should the logo appear?? Have put (Width of Image)/40. But change if required.
+    font_title = ImageFont.truetype(text_font, size=font_size)
+    draw = ImageDraw.Draw(img)
+    w,h = draw.textsize(title, font=font_title)
+    ### Do not edit below unless you know the exact working of the functionsa
+
+    out = a.get_vignet_face('_resize.png',fxy='centre' )
+    out = a.put_caption(input_file=out, caption=title,caption_width=caption_width,font_size=font_size, xy = xy, text_font=text_font)
+
+    text_font = repo_path + '/fonts/PTS56F.ttf'
+    font_size = W//36 # Font Size Enter Manually if required
+    # xy_tagline = (xy[0], xy[1]+ font_size+10)
+    xy_tagline = (xy[0], xy[1]+h*2)
+    caption_width = W//18
+    out = a.put_caption(input_file=out, caption=tag_line,caption_width=caption_width,font_size=font_size, xy = xy_tagline, text_font=text_font)
+    out = a.add_border(width=border_width,color='red',input_file=out,  )
+
+    out = a.put_logo(input_file=out,border=logo_border, output_file=output_file)
+    return(out)
+    
+    
+def quote(input_file='',title='',tag_line='', output_file='', title_cord = (0.035,0.666), title_font_size='', tag_font_size='', title_width_ratio='', border_width='', logo_border='', border_color='red', title_text_font = '', tag_text_font = '', tag_width_ratio='', tag_cord='', focus='',fb_logo = 'awakenedindian.in' , tw_logo = 'Awakened_Ind', logo = True ,*args, **kwargs):
+    if input_file =='':
+        print('Please input the file name(or complete file path)')
+        return (0)
+        
+    repo_path = get_path()
+    if output_file == '':
+        output_file = str(datetime.datetime.now()).replace('.','_')
+        output_file = output_file.replace(':','_')
+        output_file = output_file.replace(' ','_')
+        output_file = output_file.replace('-','_')
+        output_file = output_file + '.png'
+    a = sae2() # Do not Remove # Class Initiation
+    a.input_file = input_file # Name of Input  File
+    file_name = input_file.split('.')[0]
+    H,W = cv2.imread(a.input_file,1).shape[:2]
+    img = Image.open(a.input_file)
+    scale = (H/W)
+    WW = 1440
+    HH = round(WW*scale)
+    W,H = WW,HH
+    aa = img.resize((WW,HH)).save( '_resize.png')
+
+    ## For the Title
+    xy = (round(W*title_cord[0]),round(H*title_cord[1]))
+    if title_text_font == '':
+        title_text_font=repo_path + '/fonts/OTF/Akrobat-Black.otf'
+    if title_font_size == '':
+        title_font_size = W//25 # Font Size Enter Manually if required
+    if title_width_ratio == '':
+        title_width_ratio = 1 # Width of the caption. Reduce if the text is going outside the image
+    title_width = (title_width_ratio*(W//25))
+    if border_width == '':
+        border_width = W//72 # Width of the Border
+    if logo_border == '':
+        logo_border = (W//36,W//36) # How much away from the edge should the logo appear?? Have put (Width of Image)/40. But change if required.
+    font_title = ImageFont.truetype(title_text_font, size=title_font_size)
+    draw = ImageDraw.Draw(img)
+    w,h = draw.textsize(title, font=font_title)
+    ### Do not edit below unless you know the exact working of the functions
+    if (focus == 'centre') or (focus == 'center'):
+        out = a.get_vignet_face('_resize.png',fxy='centre' )
+    elif (focus == 'false') or (focus == 'False') or (focus == False):
+        out = '_resize.png'
+    else:
+        out = a.get_vignet_face('_resize.png' )
+    # If you do not want to put focus
+
+    out = a.put_caption(input_file=out, caption=title,caption_width=title_width,font_size=title_font_size, xy = xy, text_font=title_text_font)        
+    if tag_text_font == '':
+        tag_text_font = repo_path + '/fonts/PTS56F.ttf'
+    if tag_font_size == '':
+        tag_font_size = W//36 # Font Size Enter Manually if required
+    # xy_tagline = (xy[0], xy[1]+ font_size+10)
+    if tag_cord == '':
+        xy_tagline = (xy[0], xy[1]+h*2)
+    else :
+        xy_tagline = tag_cord[0]*W, tag_cord[1]*H
+    if tag_width_ratio == '':
+        tag_width_ratio = 1    
+    tag_width = round(W*0.055*tag_width_ratio)
+    out = a.put_caption(input_file=out, caption=tag_line, caption_width=tag_width,font_size=tag_font_size, xy = xy_tagline, text_font=tag_text_font)
+    if logo == True:
+        out = a.add_border(width=border_width,color=border_color,input_file=out)
+        out = a.put_logo(input_file=out,border=logo_border, output_file=output_file, fb_logo=fb_logo, tw_logo=tw_logo, logo=logo)
+    else :
+        out = a.add_border(width=border_width,output_file=output_file,color=border_color,input_file=out)
+    return(out)    
+    
+def add_border(input_image, output_image, border, border_color='black'):
+    img = Image.open(input_image) 
+    if isinstance(border, int) or isinstance(border, tuple):
+        bimg = ImageOps.expand(img, border=border, fill=border_color)
+    else:
+        raise RuntimeError('Border is not an integer or tuple!')
+    bimg.save(output_image)
+    print (output_image)
+
+def put_quote(input_file='', black_strip_dims=(0,0,0,0), *args, **kwargs):
+    if input_file=='':
+        print ('Please input the file name')
+        return (0)
+    in_img = input_file
+    img = Image.open(in_img)
+    W,H = img.size
+    a = black_strip_dims
+    border_len = (round(a[0]*W),round(a[1]*H),round(a[2]*W),round(a[3]*H))
+    add_border(in_img,
+               output_image='bordered.jpg',
+               border=border_len)
+    quote(input_file='bordered.jpg', *args,**kwargs)
+
+def q1(input_file='1.jpg'):
+    put_quote(input_file)
