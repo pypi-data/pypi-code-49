@@ -1,0 +1,5 @@
+BASE_URL = "http://tims.turkcell.com.tr/tes/rest/spi/"
+SERVICE_URL = BASE_URL + "/sendmsgserv"
+MULTI_SERVICE_URL = BASE_URL + "/sendmsgservlist"
+MULTI_DIFFERENT_CONTENT_SERVICE_URL = BASE_URL + "sendmultiusermulticontent"
+UPLOAD_SERVICE_URL = "http://timsac.turkcell.com.tr/fts/rest/file/upload"
