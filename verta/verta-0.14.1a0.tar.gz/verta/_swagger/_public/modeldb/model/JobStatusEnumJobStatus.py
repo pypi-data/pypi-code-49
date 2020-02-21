@@ -1,0 +1,8 @@
+# THIS FILE IS AUTO-GENERATED. DO NOT EDIT
+
+from enum import Enum
+
+class JobStatusEnumJobStatus(Enum):
+  NOT_STARTED = "NOT_STARTED"
+  IN_PROGRESS = "IN_PROGRESS"
+  COMPLETED = "COMPLETED"

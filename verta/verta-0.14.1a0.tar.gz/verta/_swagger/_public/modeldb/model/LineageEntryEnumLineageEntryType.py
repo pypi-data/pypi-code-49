@@ -1,0 +1,8 @@
+# THIS FILE IS AUTO-GENERATED. DO NOT EDIT
+
+from enum import Enum
+
+class LineageEntryEnumLineageEntryType(Enum):
+  UNKNOWN = "UNKNOWN"
+  EXPERIMENT_RUN = "EXPERIMENT_RUN"
+  DATASET_VERSION = "DATASET_VERSION"
