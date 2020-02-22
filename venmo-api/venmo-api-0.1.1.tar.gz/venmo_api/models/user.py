@@ -1,0 +1,62 @@
+from venmo_api import string_to_timestamp
+from venmo_api import JSONSchema
+
+
+class User(object):
+
+    def __init__(self, user_id, username, first_name, last_name, display_name, profile_picture_url,
+                 about, date_joined, is_group, is_active):
+        """
+        Initialize a new user
+        :param user_id:
+        :param username:
+        :param first_name:
+        :param last_name:
+        :param display_name:
+        :param profile_picture_url:
+        :param about:
+        :param date_joined:
+        :param is_group:
+        :param is_active:
+        :return:
+        """
+        super().__init__()
+
+        self.id = user_id
+        self.username = username
+        self.first_name = first_name
+        self.last_name = last_name
+        self.display_name = display_name
+        self.profile_picture_url = profile_picture_url
+        self.about = about
+        self.date_joined = date_joined
+        self.is_group = is_group
+        self.is_active = is_active
+
+    @classmethod
+    def from_json(cls, json, is_profile=False):
+        """
+        init a new user form JSON
+        :param json:
+        :param is_profile:
+        :return:
+        """
+        parser = JSONSchema.user(json, is_profile=is_profile)
+
+        date_joined_timestamp = string_to_timestamp(parser.get_date_created())
+
+        return cls(user_id=parser.get_user_id(),
+                   username=parser.get_username(),
+                   first_name=parser.get_first_name(),
+                   last_name=parser.get_last_name(),
+                   display_name=parser.get_full_name(),
+                   profile_picture_url=parser.get_picture_url(),
+                   about=parser.get_about(),
+                   date_joined=date_joined_timestamp,
+                   is_group=parser.get_is_group(),
+                   is_active=parser.get_is_active())
+
+    def __str__(self):
+        return f'id: {self.id}, username: {self.username}, firstname: {self.first_name}, lastname: {self.last_name}'\
+            f' display_name: {self.display_name}, picture: {self.profile_picture_url}, about: {self.about},'\
+            f' joined: {self.date_joined}, is_group: {self.is_group}, is_active: {self.is_active}'
