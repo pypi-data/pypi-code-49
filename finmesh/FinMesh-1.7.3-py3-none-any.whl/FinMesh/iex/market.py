@@ -1,0 +1,35 @@
+from ._common import *
+
+IEX_DATA_POINT_URL = 'https://cloud.iexapis.com/stable/data-points/'
+IEX_TIME_SERIES_URL = 'https://cloud.iexapis.com/stable/time-series/'
+
+IEX_COMMODITIES_URL = IEX_DATA_POINT_URL + 'market/'
+def commodities(symbol):
+    ## Returns commodites data for the requested commodities symbol.
+    url = IEX_COMMODITIES_URL + f'{symbol}?'
+    return get_iex_json_request(url)
+
+IEX_ECONOMIC_URL = IEX_DATA_POINT_URL + 'market/'
+def economic_data(symbol):
+    ## Returns economic data for the requested economic indicator symbol.
+    url = IEX_ECONOMIC_URL + f'{symbol}?'
+    return get_iex_json_request(url)
+
+IEX_DATA_POINT_URL = 'https://cloud.iexapis.com/stable/data-points/'
+def generic_data_point(symbol, key=None):
+    ## Generic endpoint used to access all 'Data Point' data sets on IEX
+    url = IEX_DATA_POINT_URL + f'{symbol}'
+    if key:
+        url += f'/{key}?'
+    else:
+        url+= '?'
+    return get_iex_json_request(url)
+
+IEX_TIME_SERIES_URL = 'https://cloud.iexapis.com/stable/time-series/'
+def generic_time_series(symbol, *args):
+    ## Generic endpoint used to access all 'Time Series' data sets on IEX
+    url = IEX_TIME_SERIES_URL + f'{symbol}'
+    for a in args:
+        url += f'/{a}'
+    url += ?
+    return get_iex_json_request(url)
