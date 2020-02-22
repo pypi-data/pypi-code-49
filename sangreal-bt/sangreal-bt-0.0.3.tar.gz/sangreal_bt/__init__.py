@@ -1,0 +1,1 @@
+from sangreal_bt.strategy.strategy import Strategy
