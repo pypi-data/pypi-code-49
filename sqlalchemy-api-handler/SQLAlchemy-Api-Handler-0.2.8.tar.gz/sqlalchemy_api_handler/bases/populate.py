@@ -1,0 +1,139 @@
+import uuid
+from datetime import datetime
+from decimal import Decimal, \
+                    InvalidOperation
+from sqlalchemy import BigInteger, \
+                       DateTime, \
+                       Float, \
+                       Integer, \
+                       Numeric, \
+                       String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.sql.schema import Column
+from typing import List, Any, Iterable, Set
+
+from sqlalchemy_api_handler.api_errors import DateTimeCastError, \
+                                              DecimalCastError, \
+                                              UuidCastError
+from sqlalchemy_api_handler.bases.delete import Delete
+from sqlalchemy_api_handler.bases.soft_delete import SoftDelete
+from sqlalchemy_api_handler.utils.date import match_format
+from sqlalchemy_api_handler.utils.human_ids import dehumanize
+
+
+class Populate(
+        Delete,
+        SoftDelete
+):
+    def __init__(self, **options):
+        self.populate_from_dict(options)
+
+    def populate_from_dict(self, datum: dict, skipped_keys: List[str] = []):
+        self.check_not_soft_deleted()
+        columns = self.__mapper__.columns
+        columns_keys_to_populate = self._get_column_keys_to_populate(
+            set(columns.keys()), datum, skipped_keys)
+        for key in columns_keys_to_populate:
+            column = columns[key]
+            value = _dehumanize_if_needed(column, datum.get(key))
+            if isinstance(value, str):
+                if isinstance(column.type, Integer):
+                    self._try_to_set_attribute_with_decimal_value(column, key, value, 'integer')
+                elif isinstance(column.type, (Float, Numeric)):
+                    self._try_to_set_attribute_with_decimal_value(column, key, value, 'float')
+                elif isinstance(column.type, String):
+                    setattr(self, key, value.strip() if value else value)
+                elif isinstance(column.type, DateTime):
+                    self._try_to_set_attribute_with_deserialized_datetime(column, key, value)
+                elif isinstance(column.type, UUID):
+                    self._try_to_set_attribute_with_uuid(column, key, value)
+            elif not isinstance(value, datetime) and isinstance(column.type, DateTime):
+                self._try_to_set_attribute_with_deserialized_datetime(column, key, value)
+            else:
+                setattr(self, key, value)
+
+        for (key, relationship) in self.__mapper__.relationships.items():
+            if key in datum:
+                model = relationship.mapper.class_
+                value = self._get_model_instance(datum[key], model)
+                if value:
+                    setattr(self, key, value)
+
+        for key in self.__mapper__.synonyms.keys():
+            if key in datum:
+                setattr(self, key, datum[key])
+
+    @staticmethod
+    def _get_column_keys_to_populate(column_keys: Set[str], data: dict, skipped_keys: Iterable[str]) -> Set[str]:
+        requested_columns_to_update = set(data.keys())
+        forbidden_columns = set(['id', 'deleted'] + skipped_keys)
+        allowed_columns_to_update = requested_columns_to_update - forbidden_columns
+        keys_to_populate = column_keys.intersection(allowed_columns_to_update)
+        return keys_to_populate
+
+    @staticmethod
+    def _get_model_instance(value, model):
+        if not isinstance(value, model):
+            if hasattr(value, 'items'):
+                if 'id' in value:
+                    model_instance = model.query.filter_by(id=dehumanize(value['id'])).one()
+                    model_instance.populate_from_dict(value)
+                    return model_instance
+                return model(**value)
+            elif hasattr(value, '__iter__'):
+                return list(map(lambda obj: Populate._get_model_instance(obj, model), value))
+        return value
+
+    def _try_to_set_attribute_with_deserialized_datetime(self, col, key, value):
+        try:
+            datetime_value = _deserialize_datetime(key, value)
+            setattr(self, key, datetime_value)
+        except TypeError:
+            error = DateTimeCastError()
+            error.add_error(col.name, "Invalid value for %s (datetime): %r" % (key, value))
+            raise error
+
+    def _try_to_set_attribute_with_uuid(self, col, key, value):
+        try:
+            uuid_obj = uuid.UUID(value)
+            setattr(self, key, value)
+        except ValueError:
+            error = UuidCastError()
+            error.add_error(col.name, "Invalid value for %s (uuid): %r" % (key, value))
+            raise error
+
+    def _try_to_set_attribute_with_decimal_value(self, col, key, value, expected_format):
+        try:
+            setattr(self, key, Decimal(value))
+        except InvalidOperation:
+            error = DecimalCastError()
+            error.add_error(col.name, "Invalid value for {} ({}): '{}'".format(key, expected_format, value))
+            raise error
+
+
+def _dehumanize_if_needed(column, value: Any) -> Any:
+    if _is_human_id_column(column):
+        return dehumanize(value)
+    return value
+
+
+def _deserialize_datetime(key, value):
+    if value is None:
+        return None
+
+    valid_patterns = ['%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%SZ']
+    datetime_value = None
+
+    for pattern in valid_patterns:
+        if match_format(value, pattern):
+            datetime_value = datetime.strptime(value, pattern)
+
+    if not datetime_value:
+        raise TypeError('Invalid value for %s: %r' % (key, value), 'datetime', key)
+
+    return datetime_value
+
+
+def _is_human_id_column(column: Column) -> bool:
+    if column is not None:
+        return (column.key == 'id' or column.key.endswith('Id')) and isinstance(column.type, (BigInteger, Integer))
