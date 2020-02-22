@@ -1,0 +1,3 @@
+
+class CannotCropImage(Exception):
+    pass
