@@ -1,0 +1,14 @@
+#!/usr/bin/env python
+from setuptools import setup
+
+setup(
+    name='SLPP',
+    description='SLPP is a simple lua-python data structures parser',
+    version='1.1',
+    author='SirAnthony',
+    url='https://github.com/SirAnthony/slpp',
+    license='https://github.com/SirAnthony/slpp/blob/master/LICENSE',
+    keywords=['lua'],
+    py_modules=['slpp'],
+    install_requires=['six'],
+)
