@@ -1,0 +1,6 @@
+__all__ = [
+	'CHARACTER_REPLACEMENTS',
+	'TEMPLATE_PATTERNS'
+]
+
+from google_music_utils import CHARACTER_REPLACEMENTS, TEMPLATE_PATTERNS
