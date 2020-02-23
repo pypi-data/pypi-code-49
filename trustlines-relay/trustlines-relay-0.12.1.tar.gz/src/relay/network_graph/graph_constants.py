@@ -1,0 +1,7 @@
+creditline_ab = "creditline_ab"
+creditline_ba = "creditline_ba"
+interest_ab = "interest_ab"
+interest_ba = "interest_ba"
+is_frozen = "is_frozen"
+m_time = "m_time"
+balance_ab = "balance_ab"
