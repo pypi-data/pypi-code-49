@@ -1,0 +1,1 @@
+from autosolve_client_python.autosolve import AutoSolve
