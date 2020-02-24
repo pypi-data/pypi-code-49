@@ -1,0 +1,6 @@
+__version__ = '0.9.1'
+__url__ = 'https://github.com/tolstislon/pytest-pytestrail'
+__description__ = 'Pytest plugin for interaction with TestRail'
+__author__ = 'tolstislon'
+__author_email__ = 'tolstislon@gmail.com'
+__license__ = 'MIT License'
