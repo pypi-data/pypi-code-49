@@ -1,0 +1,1 @@
+REDISPASS = '<your redis password>'
