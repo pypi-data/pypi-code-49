@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import requests, socket
+import re
+import bs4
+from urllib.parse import urlparse
+from packaging import version
+
+
+def uparse(target):
+	url = urlparse(target)
+	return url.scheme + "://" + url.netloc # BASE URL
+
+def request(target):
+	UA = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:15.0) Gecko/20100101 Firefox/15.0.1"
+	headers = {'X-Atlassian-Token':'no-check', 'User-Agent':UA}
+	try:
+		r = requests.get(target, headers=headers)
+	except Exception as e:
+		print("Problem with the HTTP request.", e, sep="\n")
+		exit(1) # https://stackoverflow.com/a/2434619
+
+	# if r.status_code != 200:
+	# 	print("Something went wrong! (STATUS {})".format(r.status_code))
+	# 	if r.status_code == 302:
+	# 		print("HTTP request got redirected. Set this instead: " + r.headers['Location'])
+	# 	exit(1)
+
+	return r, r.text
+
+def isjira(target): # reckless check but ok
+	target = uparse(target)
+	res, response = request(target)
+	if "jira" in str(response):
+		return True
+	else:
+		return False
+
+def isaws(target):
+	data = socket.gethostbyaddr(target)
+	if "amazonaws" in str(data):
+		return True
+	else:
+		return False
+
+def getversion(target): # Jira version appears to be ____
+	target = uparse(target)
+	# ENUM TYPE 1
+	f_build = '0.0.0' # default
+	vers = []
+	final_version = ""
+	target = target + urlparse(target).path if "/login.jsp" in urlparse(target).path else target + '/login.jsp'
+	res, response = request(target)
+	soup = bs4.BeautifulSoup(response, "html.parser")
+	try:
+		vers = vers + [item["data-version"] for item in soup.find_all() if "data-version" in item.attrs] # ajs tags
+		f_build = soup.find("span", {"id": "footer-build-information"}).get_text() # Login page footer
+		vers.append(f_build.split("#")[0]) # grabbing & appending the version
+	except:
+		pass
+	# finalize the version
+	try:
+		for n, i in enumerate(vers):
+			vers[n] = version.parse(i)
+		final_version = str(max(vers))
+	except Exception as e:
+		final_version = False # if fails
+
+	return final_version
