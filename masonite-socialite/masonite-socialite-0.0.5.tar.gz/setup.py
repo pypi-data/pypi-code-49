@@ -1,0 +1,42 @@
+from setuptools import setup, find_packages
+
+setup(
+    name='masonite-socialite',
+    version='0.0.5',
+    package_dir={'': 'src'},
+    description='Flexible Social Authentication for Masonite Framework',
+    long_description=open("README.md", "r", encoding="utf-8").read(),
+    url='https://github.com/hellomasonite/masonite-socialite',
+    author='Corentin Allohoumbo',
+    author_email='corentinalcoy@gmail.com',
+    license='MIT',
+    include_package_data=True,
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Intended Audience :: Developers',
+        'Topic :: Software Development :: Build Tools',
+        'Environment :: Web Environment',
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Topic :: Internet :: WWW/HTTP',
+        'Topic :: Internet :: WWW/HTTP :: Dynamic Content',
+        'Topic :: Internet :: WWW/HTTP :: WSGI',
+        'Topic :: Software Development :: Libraries :: Application Frameworks',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+    ],
+    keywords='social authentication masonite python',
+    packages=find_packages('src'),
+    install_requires=[
+        'social-auth-core==3.2.0',
+        'requests-oauthlib==1.3.0',
+    ],
+    setup_requires=['wheel'],
+    extras_require={
+        'test': ['coverage', 'pytest'],
+    },
+    long_description_content_type='text/markdown',
+)
