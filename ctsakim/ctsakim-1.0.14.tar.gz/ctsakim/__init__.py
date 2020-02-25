@@ -1,0 +1,1 @@
+from .ctsakim import world, current
