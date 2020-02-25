@@ -1,0 +1,1 @@
+from needlestack.cluster_managers.manager import ClusterManager
