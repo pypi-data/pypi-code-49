@@ -1,0 +1,27 @@
+from setuptools import setup
+from pubgy import __version__ as v
+with open("README.md") as info:
+    desc = info.read()
+setup(
+   name='PUBGy',
+   version=v,
+   description="PUBG API wrapper for Python",
+   long_description=desc,
+   long_description_content_type="text/markdown",
+   url="https://github.com/Discord-ian/pubgy",
+   author='Discordian',
+   packages=['pubgy'],
+   classifiers=[
+      "Development Status :: 3 - Alpha",
+      "License :: OSI Approved :: GNU General Public License (GPL)",
+      "Natural Language :: English",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: 3.7",
+      "Programming Language :: Python :: 3.8",
+      "Operating System :: OS Independent",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+   ],
+   install_requires=['asyncio', 'aiohttp'],
+   python_requires='>=3.5'
+)
