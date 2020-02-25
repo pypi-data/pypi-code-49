@@ -1,0 +1,42 @@
+# -*- coding: utf8 -*-
+# Copyright (c) 2020 Niklas Rosenstein
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to
+# deal in the Software without restriction, including without limitation the
+# rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+# sell copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+# IN THE SOFTWARE.
+
+from nr.databind.core import Field, Struct
+import sys
+
+__all__ = ['SetWallpaperOptions', 'set_wallpaper']
+
+
+class SetWallpaperOptions(Struct):
+  path = Field(str)  #: Path to the file to set the wallpaper to.
+  desktop = Field(bool, default=True)  #: Set it as desktop wallpaper.
+  login = Field(bool, default=False)  #: Set it as login wallpaper (if supported).
+
+
+if sys.platform == 'win32':
+  from .win32 import set_wallpaper
+#elif sys.platform == 'darwin':
+#  from .macos import set_wallpaper
+elif sys.platform.startswith('linux'):
+  from .linux import set_wallpaper
+else:
+  def set_wallpaper(options: SetWallpaperOptions):
+    raise NotImplementedError(sys.platform)
