@@ -1,0 +1,1 @@
+from pymyransom.pymyransom import makeMyRansomware
