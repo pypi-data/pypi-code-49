@@ -1,0 +1,1 @@
+from quotes_fetcher.core import Symbols
