@@ -1,0 +1,4 @@
+
+BAUD_RATE = 115200
+DEFAULT_ALGO = "No Algorithm"
+DOUBLE_SIZE = 8
