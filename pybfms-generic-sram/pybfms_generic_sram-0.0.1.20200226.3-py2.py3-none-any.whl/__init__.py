@@ -1,0 +1,2 @@
+
+from generic_sram_bfms.generic_sram_byte_en_dualport_target_bfm import *
