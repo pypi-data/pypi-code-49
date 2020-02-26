@@ -1,0 +1,5 @@
+BOT_EVENT = 'bot'
+USER_EVENT = 'user'
+SLOT_EVENT = 'slot'
+ACTION_EVENT = 'action'
+NLU_EVENT = 'nlu'
