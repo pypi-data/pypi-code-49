@@ -1,0 +1,274 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright 2020 - Swiss Data Science Center (SDSC)
+# A partnership between École Polytechnique Fédérale de Lausanne (EPFL) and
+# Eidgenössische Technische Hochschule Zürich (ETHZ).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Renku service datasets view."""
+import os
+import uuid
+from pathlib import Path
+
+from flask import Blueprint, request
+from flask_apispec import marshal_with, use_kwargs
+
+from renku.core.commands.dataset import add_file, create_dataset, \
+    list_datasets, list_files
+from renku.core.models import json
+from renku.core.utils.contexts import chdir
+from renku.service.config import INTERNAL_FAILURE_ERROR_CODE, \
+    INVALID_PARAMS_ERROR_CODE, SERVICE_PREFIX
+from renku.service.jobs.constants import USER_JOB_STATE_ENQUEUED
+from renku.service.jobs.contexts import enqueue_retry
+from renku.service.jobs.datasets import dataset_import
+from renku.service.jobs.queues import DATASETS_JOB_QUEUE
+from renku.service.serializers.datasets import DatasetAddRequest, \
+    DatasetAddResponseRPC, DatasetCreateRequest, DatasetCreateResponseRPC, \
+    DatasetFilesListRequest, DatasetFilesListResponseRPC, \
+    DatasetImportRequest, DatasetImportResponseRPC, DatasetListRequest, \
+    DatasetListResponseRPC
+from renku.service.utils import make_file_path, make_project_path, repo_sync
+from renku.service.views import error_response, result_response
+from renku.service.views.decorators import accepts_json, handle_base_except, \
+    handle_git_except, handle_renku_except, handle_validation_except, \
+    header_doc, requires_cache, requires_identity
+
+DATASET_BLUEPRINT_TAG = 'datasets'
+dataset_blueprint = Blueprint(
+    DATASET_BLUEPRINT_TAG, __name__, url_prefix=SERVICE_PREFIX
+)
+
+
+@use_kwargs(DatasetListRequest, locations=['query'])
+@marshal_with(DatasetListResponseRPC)
+@header_doc('List all datasets in project.', tags=(DATASET_BLUEPRINT_TAG, ))
+@dataset_blueprint.route(
+    '/datasets.list',
+    methods=['GET'],
+    provide_automatic_options=False,
+)
+@handle_base_except
+@handle_git_except
+@handle_renku_except
+@handle_validation_except
+@requires_cache
+@requires_identity
+def list_datasets_view(user, cache):
+    """List all datasets in project."""
+    ctx = DatasetListRequest().load(request.args)
+    project = cache.get_project(user, ctx['project_id'])
+    project_path = make_project_path(user, project)
+
+    if not project_path:
+        return error_response(
+            INVALID_PARAMS_ERROR_CODE, 'invalid project_id argument'
+        )
+
+    with chdir(project_path):
+        ctx['datasets'] = list_datasets()
+
+    return result_response(DatasetListResponseRPC(), ctx)
+
+
+@use_kwargs(DatasetFilesListRequest, locations=['query'])
+@marshal_with(DatasetFilesListResponseRPC)
+@header_doc('List files in a dataset.', tags=(DATASET_BLUEPRINT_TAG, ))
+@dataset_blueprint.route(
+    '/datasets.files_list',
+    methods=['GET'],
+    provide_automatic_options=False,
+)
+@handle_base_except
+@handle_git_except
+@handle_renku_except
+@handle_validation_except
+@requires_cache
+@requires_identity
+def list_dataset_files_view(user, cache):
+    """List files in a dataset."""
+    ctx = DatasetFilesListRequest().load(request.args)
+    project = cache.get_project(user, ctx['project_id'])
+    project_path = make_project_path(user, project)
+
+    if not project_path:
+        return error_response(
+            INVALID_PARAMS_ERROR_CODE, 'invalid project_id argument'
+        )
+
+    with chdir(project_path):
+        ctx['files'] = list_files(datasets=[ctx['dataset_name']])
+
+    return result_response(DatasetFilesListResponseRPC(), ctx)
+
+
+@use_kwargs(DatasetAddRequest)
+@marshal_with(DatasetAddResponseRPC)
+@header_doc(
+    'Add an uploaded file to a cloned repository.',
+    tags=(DATASET_BLUEPRINT_TAG, )
+)
+@dataset_blueprint.route(
+    '/datasets.add',
+    methods=['POST'],
+    provide_automatic_options=False,
+)
+@handle_base_except
+@handle_git_except
+@handle_renku_except
+@handle_validation_except
+@accepts_json
+@requires_cache
+@requires_identity
+def add_file_to_dataset_view(user, cache):
+    """Add the uploaded file to cloned repository."""
+    ctx = DatasetAddRequest().load(request.json)
+    project = cache.get_project(user, ctx['project_id'])
+    project_path = make_project_path(user, project)
+
+    if not project_path:
+        return error_response(
+            INVALID_PARAMS_ERROR_CODE,
+            'invalid project_id: {0}'.format(ctx['project_id'])
+        )
+
+    if not ctx['commit_message']:
+        ctx['commit_message'] = 'service: dataset add {0}'.format(
+            ctx['dataset_name']
+        )
+
+    local_paths = []
+    for _file in ctx['files']:
+        local_path = None
+
+        if 'file_id' in _file:
+            file = cache.get_file(user, _file['file_id'])
+            local_path = make_file_path(user, file)
+
+        elif 'file_path' in _file:
+            local_path = project_path / Path(_file['file_path'])
+
+        if not local_path or not local_path.exists():
+            return error_response(
+                INVALID_PARAMS_ERROR_CODE,
+                'invalid file reference: {0}'.format(json.dumps(_file))
+            )
+
+        ctx['commit_message'] += ' {0}'.format(local_path.name)
+        local_paths.append(str(local_path))
+
+    with chdir(project_path):
+        add_file(
+            local_paths,
+            ctx['dataset_name'],
+            create=ctx['create_dataset'],
+            commit_message=ctx['commit_message']
+        )
+
+        if not repo_sync(project_path):
+            return error_response(
+                INTERNAL_FAILURE_ERROR_CODE, 'repo sync failed'
+            )
+
+    return result_response(DatasetAddResponseRPC(), ctx)
+
+
+@use_kwargs(DatasetCreateRequest)
+@marshal_with(DatasetCreateResponseRPC)
+@header_doc(
+    'Create a new dataset in a project.', tags=(DATASET_BLUEPRINT_TAG, )
+)
+@dataset_blueprint.route(
+    '/datasets.create',
+    methods=['POST'],
+    provide_automatic_options=False,
+)
+@handle_base_except
+@handle_git_except
+@handle_renku_except
+@handle_validation_except
+@accepts_json
+@requires_cache
+@requires_identity
+def create_dataset_view(user, cache):
+    """Create a new dataset in a project."""
+    ctx = DatasetCreateRequest().load(request.json)
+    project = cache.get_project(user, ctx['project_id'])
+
+    project_path = make_project_path(user, project)
+    if not project_path:
+        return error_response(
+            INVALID_PARAMS_ERROR_CODE, 'invalid project_id argument'
+        )
+
+    with chdir(project_path):
+        create_dataset(
+            ctx['dataset_name'],
+            commit_message=ctx['commit_message'],
+            creators=ctx.get('creators'),
+            description=ctx.get('description'),
+        )
+
+    if not repo_sync(project_path):
+        return error_response(
+            INTERNAL_FAILURE_ERROR_CODE,
+            'push to remote failed silently - try again'
+        )
+
+    return result_response(DatasetCreateResponseRPC(), ctx)
+
+
+@use_kwargs(DatasetImportRequest)
+@marshal_with(DatasetImportResponseRPC)
+@header_doc('Import a dataset', tags=(DATASET_BLUEPRINT_TAG, ))
+@dataset_blueprint.route(
+    '/datasets.import',
+    methods=['POST'],
+    provide_automatic_options=False,
+)
+@handle_base_except
+@handle_validation_except
+@requires_cache
+@requires_identity
+def import_dataset_view(user, cache):
+    """Import a dataset view."""
+    ctx = DatasetImportRequest().load(request.json)
+    project = cache.get_project(user, ctx['project_id'])
+    project_path = make_project_path(user, project)
+
+    if not project_path:
+        return error_response(
+            INVALID_PARAMS_ERROR_CODE,
+            'invalid project_id: {0}'.format(ctx['project_id'])
+        )
+
+    user_job = {
+        'job_id': uuid.uuid4().hex,
+        'state': USER_JOB_STATE_ENQUEUED,
+    }
+    cache.create_job(user, user_job)
+
+    with enqueue_retry(DATASETS_JOB_QUEUE) as queue:
+        queue.enqueue(
+            dataset_import,
+            user,
+            user_job['job_id'],
+            ctx['project_id'],
+            ctx['dataset_uri'],
+            short_name=ctx.get('short_name'),
+            extract=ctx.get('extract', False),
+            timeout=int(os.getenv('WORKER_DATASET_JOBS_TIMEOUT', 1800)),
+            result_ttl=int(os.getenv('WORKER_DATASET_JOBS_RESULT_TTL', 500))
+        )
+
+    return result_response(DatasetImportResponseRPC(), user_job)
