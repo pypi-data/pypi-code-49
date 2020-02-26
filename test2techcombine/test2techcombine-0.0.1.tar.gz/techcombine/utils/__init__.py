@@ -1,0 +1,1 @@
+from techcombine.utils.slug import Slug
