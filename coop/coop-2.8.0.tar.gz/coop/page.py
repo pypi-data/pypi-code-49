@@ -1,0 +1,86 @@
+import re
+
+from django.conf import settings
+from django.core.mail import EmailMessage
+from django.db import models
+from django.template.response import TemplateResponse
+from wagtail.admin.edit_handlers import FieldPanel, MultiFieldPanel
+from wagtail.core import models as wagtailmodels
+from wagtail.images.edit_handlers import ImageChooserPanel
+from wagtailmetadata.models import MetadataPageMixin
+
+from .forms import ContactForm
+
+
+class Page(MetadataPageMixin, wagtailmodels.Page):
+    """
+    A base page with social metadata and a more sensible default template.
+    """
+
+    # Disable the creation of the related field accessor on Page
+    # This prevents conflicts with model names and field names
+    page_ptr = models.OneToOneField(wagtailmodels.Page, parent_link=True,
+                                    related_name='+', on_delete=models.CASCADE)
+
+    # We override promote panels to remove show_in_menus
+    promote_panels = [
+        MultiFieldPanel([
+            FieldPanel('slug'),
+            FieldPanel('seo_title'),
+            FieldPanel('search_description'),
+            ImageChooserPanel('search_image'),  # From MetadataPageMixin
+        ], 'Common page configuration'),
+    ]
+
+    def get_template(self, request, *args, **kwargs):
+        """
+        Templates are named like ``layouts/app/model.html``.
+        """
+        label = self._meta.label.split('.')
+        app = label[0]
+        model_name = '_'.join(re.findall('^[a-z]+|[A-Z][^A-Z]*', label[1])).lower()
+        return "layouts/{}/{}.html".format(app, model_name)
+
+    class Meta:
+        abstract = True
+
+
+class ContactPageMixin(models.Model):
+    contact_form_class = ContactForm
+
+    email_to = models.EmailField(help_text='The email address enquiries should be sent to')
+
+    def get_context(self, request, *args, **kwargs):
+        context = super().get_context(request, *args, **kwargs)
+        ContactForm = self.contact_form_class
+        context.update({
+            'contact_form': ContactForm(),
+            'gmaps_key': getattr(settings, 'GMAPS_KEY', ''),
+        })
+        return context
+
+    def serve(self, request):
+        request.is_preview = getattr(request, 'is_preview', False)
+        context = self.get_context(request)
+
+        if request.method == 'POST':
+            ContactForm = self.contact_form_class
+            form = ContactForm(request.POST)
+            if form.is_valid():
+                data = form.cleaned_data
+                msg_content = '\n'.join([
+                    '{0}: {1}'.format(field.label, data[field.name])
+                    for field in form])
+                msg = EmailMessage(
+                    'Website enquiry from %s' % data['name'], msg_content,
+                    to=[self.email_to],
+                    reply_to=[data['email']])
+                msg.send()
+            context.update({
+                'success': form.is_valid(),
+                'contact_form': form,
+            })
+        return TemplateResponse(request, self.get_template(request), context)
+
+    class Meta:
+        abstract = True
